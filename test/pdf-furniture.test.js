@@ -1,10 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { repeatedPdfTextMasks, removeRepeatedPdfDividers } from '../src/pdf-furniture.js';
+import { repeatedPdfTextMasks, removeRepeatedPdfDividers, pdfFurnitureText, pdfFurniturePages, pdfPageNumberMasks } from '../src/pdf-furniture.js';
 import { insidePdfMargin } from '../src/pdf-margins.js';
 import { analyzePdfPage } from '../src/pdf-layout.js';
 
 const line = (text, y, x = 60, width = 470, height = 12) => ({ text, x, y, width, height });
+
+test('hidden scan text supplies missing furniture evidence without replacing corrected prose', () => {
+  const body = [180, 205, 230, 255].map(y => line('The corrected body paragraph must remain available.', y));
+  const pages = [25, 27].map(n => ({ width: 600, height: 800, text: body,
+    furnitureText: pdfFurnitureText([line('PLANS', 35, 200, 60), line(String(n), 35, 500, 20),
+      line('Uncorrected original body', 180)], 800) }));
+  const alternatives = pdfFurniturePages(pages), masks = repeatedPdfTextMasks(alternatives);
+  assert.ok(masks.every(page => page.length === 1));
+  assert.ok(body.every(box => !insidePdfMargin(box, masks[0])));
+  assert.equal(alternatives[0].text.filter(box => box.text.includes('Uncorrected')).length, 0);
+  assert.equal(pages[0].text, body, 'body source objects are unchanged');
+  assert.deepEqual(repeatedPdfTextMasks([alternatives[0]]), [[]], 'isolated titles are protected');
+  const folio = { ...pages[0], furnitureText: [line('3', 35, 500, 10)] };
+  assert.equal(pdfPageNumberMasks(pdfFurniturePages([folio])[0]).length, 1);
+});
 
 test('a repeated compact running head survives a damaged OCR folio without retaining its garbage', () => {
   const body = [180, 210, 240, 270].map(y => line('Alphabetical index entry, 25', y, 60, 180, 14));

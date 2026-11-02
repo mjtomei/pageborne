@@ -5,7 +5,7 @@ import { MAX_PDF_PAGES } from './pdf-limits.js';
 
 // Increment only when preparation geometry/recognition changes, not on every
 // app release. The full source hash and every PDF formatting option also match.
-export const PDF_PREPARATION_VERSION = 18;
+export const PDF_PREPARATION_VERSION = 19;
 export async function pdfPreparationKey(bytes, options, pdfjsVersion) {
   const hash = await crypto.subtle.digest('SHA-256', bytes);
   return JSON.stringify([PDF_PREPARATION_VERSION, pdfjsVersion,

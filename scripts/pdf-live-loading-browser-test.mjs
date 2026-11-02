@@ -13,7 +13,7 @@ const server = await createServer({ mode: 'release', cacheDir: '.state/vite-pdf-
   name: 'pdf-live-fixture', transform(code, id) {
     if (id.endsWith('/src/main.js')) return code.replace('enabled: DEBUG', 'enabled: true').replace('const opening = pdfDocument;', 'const opening = pdfDocument; window.__pdfForTest = opening;');
     if (id.endsWith('/src/speech-setup.js')) return code.replace('start(initialize) {', 'start(initialize) { this.blocked = false; return Promise.resolve();');
-    if (!process.env.PDF_SAMPLE && id.endsWith('/src/pdf.js')) return code.replace('textPages.push(await this.readPageText', 'await new Promise(resolve => setTimeout(resolve, 250)); textPages.push(await this.readPageText');
+    if (!process.env.PDF_SAMPLE && id.endsWith('/src/pdf.js')) return code.replace('const extracted = await this.readPageText', 'await new Promise(resolve => setTimeout(resolve, 250)); const extracted = await this.readPageText');
   },
 }], server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, clearScreen: false });
 await server.listen();

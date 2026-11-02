@@ -16,7 +16,7 @@ import { PdfRaster, PDF_RASTER_TILE } from './pdf-raster.js';
 import { readPdfText, pdfFontAscent, pdfTextNeedsOcr, pdfWordGeometryNeedsOcr, restorePdfOcrMarkers, splitPdfOcrColumns, pdfHasScanTranscript, pdfRomanHeadingHints, restorePdfRomanHeadings } from './pdf-text.js';
 import { pdfAnalysisViewport, pdfSourceTransform, pdfSourcePoint } from './pdf-orientation.js';
 import { pdfContentsEntries, markPdfContents } from './pdf-contents.js';
-import { repeatedPdfTextMasks, pdfPageNumberMasks, pdfGraphicFurnitureMasks, removeRepeatedPdfDividers } from './pdf-furniture.js';
+import { repeatedPdfTextMasks, pdfPageNumberMasks, pdfGraphicFurnitureMasks, removeRepeatedPdfDividers, pdfFurnitureText, pdfFurniturePages } from './pdf-furniture.js';
 import { pdfBodySize, separatePdfAnnotations, pdfSectionOrder, labelPdfAnnotation, pdfEndMatterStart, pdfFootnoteStyle } from './pdf-annotations.js';
 import { insidePdfMargin } from './pdf-margins.js';
 import { renderPdfPage } from './pdf-render.js';
@@ -201,7 +201,9 @@ export class PdfDocument {
       if (this.destroyed) throw new Error('PDF closed.');
       onProgress(`Reading PDF text ${number} of ${this.pdf.numPages}…`);
       this.checkpoint('extracting-text', { page: number });
-      textPages.push(await this.readPageText(number, reflow, onProgress));
+      const extracted = await this.readPageText(number, reflow, onProgress);
+      await this.restorePageFurniture(number, extracted);
+      textPages.push(extracted);
       if (!this.navigation.outline.length) {
         const page = textPages.at(-1);
         // Corrected OCR coordinates must remain in the original page space.
@@ -324,6 +326,7 @@ export class PdfDocument {
         }
       }
       const extracted = { width: Math.ceil(viewport.width), height: Math.ceil(viewport.height), needsOcr,
+        furnitureText: needsOcr && !turn ? pdfFurnitureText(embedded, viewport.height) : [],
         romanHints: scanTranscript && !turn ? pdfRomanHeadingHints(embedded, viewport.width, viewport.height) : [],
         text, orientationMasks, layoutFromOcr: Boolean(turn || scanTranscript || pdfWordGeometryNeedsOcr(embedded)),
         // A corrupt encoding can still have useful line geometry. Keep it
@@ -337,11 +340,29 @@ export class PdfDocument {
       return extracted;
     });
   }
+  async restorePageFurniture(number, extracted) {
+    if (!extracted.needsOcr || extracted.furnitureText !== undefined) return;
+    // Older desktop checkpoints predate furniture evidence. Recover just the
+    // hidden edge text without rendering a page or starting another OCR pass.
+    const page = await this.pdf.getPage(number);
+    try {
+      const viewport = pdfAnalysisViewport(page, this.pageTurns.get(number) || 0);
+      extracted.furnitureText = pdfFurnitureText(textBoxes(await readPdfText(page), viewport), viewport.height);
+    } finally { page.cleanup(); }
+  }
   analysisContext(textPages, { keepRepeatedText }) {
     this.checkpoint('detecting-repeated-text');
     const repeatedMasks = keepRepeatedText ? textPages.map(() => []) : repeatedPdfTextMasks(textPages);
     if (!keepRepeatedText) textPages.forEach((page, index) => repeatedMasks[index].push(...page.orientationMasks, ...pdfPageNumberMasks({ ...page,
       text: page.text.filter(box => !insidePdfMargin(box, repeatedMasks[index])) })));
+    if (!keepRepeatedText) {
+      const furniturePages = pdfFurniturePages(textPages), extra = repeatedPdfTextMasks(furniturePages);
+      furniturePages.forEach((page, index) => {
+        if (!textPages[index].furnitureText?.length) return;
+        repeatedMasks[index].push(...extra[index], ...pdfPageNumberMasks({ ...page,
+          text: page.text.filter(box => !insidePdfMargin(box, extra[index])) }));
+      });
+    }
     const bodySize = pdfBodySize(textPages);
     return { repeatedMasks, bodySize, noteStyle: pdfFootnoteStyle(textPages, bodySize) };
   }

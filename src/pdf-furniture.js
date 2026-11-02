@@ -2,6 +2,17 @@
 // to the page edges: a phrase repeated in the body is still document content.
 import { pdfTextRows } from './pdf-reflow.js';
 const bottom = box => box.y + box.height;
+
+// A scan's original hidden text can retain a folio that a later OCR pass
+// omitted. Use it only as independent edge-furniture evidence, never as a
+// replacement for corrected body text. The usual repetition/isolation tests
+// still decide whether anything can actually be removed.
+export const pdfFurnitureText = (text, height) => text.filter(box => box.height > 0 && box.height < height * .04
+  && (bottom(box) < height * .1 || box.y > height * .94));
+export function pdfFurniturePages(pages) {
+  return pages.map(page => page.furnitureText?.length ? { ...page,
+    text: [...page.text.filter(box => bottom(box) >= page.height * .1 && box.y <= page.height * .94), ...page.furnitureText] } : page);
+}
 const signature = text => text.toLocaleLowerCase().replace(/[\u0000-\u001f]/g, '')
   .replace(/\d+/g, '#').replace(/[^\p{L}#]/gu, '');
 const similarSideMark = (a, b) => {

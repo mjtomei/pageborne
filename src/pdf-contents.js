@@ -3,7 +3,7 @@ import { pdfTextRows } from './pdf-reflow.js';
 // A contents page has a single aligned reference column, not a data table.
 // Decide before column segmentation, which would otherwise detach the folios.
 export function pdfContentsEntries(text, width) {
-  const candidates = pdfTextRows(text).flatMap(row => {
+  const candidates = pdfTextRows(text.flatMap(line => line.words?.length ? line.words : [line])).flatMap(row => {
     const match = row.text.match(/\s(\d{1,4}|[ivxlcdm]{1,8})\s*$/i);
     if (!match) return [];
     const last = row.items.at(-1);

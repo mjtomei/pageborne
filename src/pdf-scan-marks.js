@@ -45,6 +45,15 @@ export function pdfScanMarks({ width, height, data, text }) {
   const body = { x: quantile(prose.map(row => row.x), .1), y: Math.min(...prose.map(row => row.y)),
     right: quantile(prose.map(right), .9), bottom: Math.max(...prose.map(bottom)) };
   const annotations = [];
+  // Hanging indents, reference labels and speaker names can extend beyond
+  // the main prose lane. Their recognized glyphs are not margin handwriting.
+  const printedWords = text.flatMap(line => line.words?.length ? line.words : [line])
+    .filter(word => word.confidence >= 80 && /\p{L}/u.test(word.text) && word.height >= size * .6);
+  const printedComponent = box => printedWords.some(word => {
+    const overlap = Math.max(0, Math.min(right(box), right(word)) - Math.max(box.x, word.x))
+      * Math.max(0, Math.min(bottom(box), bottom(word)) - Math.max(box.y, word.y));
+    return overlap >= box.width * box.height * .8;
+  });
   // A note can start above the first reliable prose row (OCR may merge it
   // with that row). Extend vertically so its ascenders are not clipped.
   const top = Math.max(8, body.y - size * 2), end = Math.min(height - 8, body.bottom + size * 2);
@@ -53,7 +62,7 @@ export function pdfScanMarks({ width, height, data, text }) {
   for (const lane of lanes.filter(lane => lane.width > 8 && lane.width < width * .3)) {
     // Keep thin/disconnected pencil strokes within a group; filtering each
     // glyph by width clipped the tops of handwritten letters and final C's.
-    const pieces = components(data, width, height, lane).filter(box => box.count >= 8
+    const pieces = components(data, width, height, lane).filter(box => box.count >= 8 && !printedComponent(box)
       && !((box.x < 20 || right(box) > width - 20) && box.height > lane.height * .4));
     const groups = [];
     for (const piece of pieces.sort((a, b) => a.y - b.y)) {

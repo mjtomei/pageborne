@@ -1,4 +1,5 @@
 import { pdfTextRows } from './pdf-reflow.js';
+import { pdfContentsEntries } from './pdf-contents.js';
 
 // Inspect the original scan before contrast normalization turns paper shading
 // and bleed-through into "ink". Blank leaves may have a few isolated specks,
@@ -61,6 +62,12 @@ export function pdfWholePageImage({ width, height, data, images, text, blank = f
   }
   const prose = pdfTextRows(text).filter(row => row.text.length >= 35 && row.text.trim().split(/\s+/).length >= 5);
   if (prose.length >= 5 && prose.reduce((sum, row) => sum + row.text.length, 0) >= 240) return null;
+  // A paragraph continued onto an otherwise empty leaf is not a title page.
+  // This only admits it to analysis: unexplained pixels still trigger the
+  // whole-page fallback after reflow, protecting illustrations and plates.
+  if (reflow && (pdfContentsEntries(text, width).length || prose.length >= 2
+    && prose.reduce((sum, row) => sum + row.text.length, 0) >= 160
+    && prose.some(row => /^[a-z]/.test(row.text.trim()) || /[.!?][”’"']?$/.test(row.text.trim())))) return null;
   let ink = 0;
   for (let i = 0; i < data.length; i += 4) {
     if (data[i + 3] > 20 && data[i] * .2126 + data[i + 1] * .7152 + data[i + 2] * .0722 < 235 && ++ink >= 20) {

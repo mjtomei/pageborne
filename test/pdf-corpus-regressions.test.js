@@ -27,6 +27,19 @@ test('contents keep each title and folio together, remove leaders, and do not re
   assert.deepEqual(pdfContentsEntries(table,600),[]);
 });
 
+test('scanned contents retain the gap between titles and folios inside OCR line objects', () => {
+  const text = [line('Contents', 50, 40), ...Array.from({ length: 6 }, (_, i) => {
+    const title = line(`${i + 1}. Section heading`, 50, 100 + i * 30);
+    const folio = line(`${40 + i}`, 520, title.y, 30);
+    return { ...title, width: 500, text: `${title.text} ${folio.text}`, words: [title, folio] };
+  })];
+  const entries = pdfContentsEntries(text, 600);
+  assert.equal(entries.length, 6);
+  const marked = markPdfContents([block(text.slice(1))], entries)[0];
+  assert.match(reflowPdfBlock(marked).text, /1\. Section heading — page 40/);
+  assert.deepEqual(pdfContentsEntries(text.map(row => ({ ...row, words: undefined })), 600), [], 'a string alone cannot establish alignment');
+});
+
 test('scanned graph axes include detached tick labels without absorbing the following caption or paragraph', () => {
   const width=600,height=800,data=new Uint8ClampedArray(width*height*4).fill(255);
   const rect=(x,y,w,h)=>{for(let yy=y;yy<y+h;yy++)for(let xx=x;xx<x+w;xx++)data.fill(0,(yy*width+xx)*4,(yy*width+xx)*4+3);};

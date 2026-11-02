@@ -60,6 +60,17 @@ test('scanned paragraphs retain reflow and blank pages do not acquire an image',
   assert.equal(pdfWholePageImage(page), null);
 });
 
+test('a short paragraph continuation reaches layout analysis instead of being treated as a cover', () => {
+  const page = scan();
+  page.text = ['the preceding discussion explains why the activities cannot be separated from their setting,',
+    'and why an account of their practical circumstances is necessary to understand the result.']
+    .map((text, n) => ({ text, x: 50, y: 100 + n * 20, width: 500, height: 15, confidence: 95 }));
+  assert.equal(pdfWholePageImage({ ...page, reflow: true }), null);
+  assert.equal(pdfWholePageImage(page).blocks[0].fullPage, true);
+  page.text = [{ ...page.text[0], text: 'A BOOK TITLE' }, { ...page.text[1], text: 'AN AUTHOR' }];
+  assert.equal(pdfWholePageImage({ ...page, reflow: true }).blocks[0].fullPage, true);
+});
+
 test('binding shadows after prose do not turn into several empty reflow panes', () => {
   const page = scan(); page.data.fill(255);
   const ink = (x, y, value = 0) => { const i = (y * page.width + x) * 4; page.data.fill(value, i, i + 3); };

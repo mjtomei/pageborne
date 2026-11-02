@@ -34,6 +34,21 @@ test('low confidence alone cannot delete a real word, heading, figure or note re
   p.text = p.text.slice(0, 2);
   assert.deepEqual(pdfScanMarks(p).annotations, []);
 });
+
+test('printed reference labels outside hanging indents are not cropped as handwriting', () => {
+  const p = fixture();
+  for (const y of [100, 260, 420]) {
+    const label = { x: 40, y, width: 42, height: 20, text: 'Author,', confidence: 96 };
+    for (let x = 40; x < 80; x += 10) p.rect(x, y, 6, 16);
+    const row = p.text.find(row => row.y === y);
+    row.words = [label, { ...row }]; row.text = `${label.text} ${row.text}`; row.x = 40; row.width = 440;
+  }
+  // Real, unrecognized writing in the opposite margin must still be saved.
+  for (let x = 520; x < 575; x += 10) p.rect(x, 155, 6, 15);
+  const result = pdfScanMarks(p);
+  assert.equal(result.annotations.length, 1); assert.ok(result.annotations[0].x > 500);
+  assert.equal(result.text.filter(row => row.text.startsWith('Author,')).length, 3);
+});
 test('wavy underline artifacts can touch a footer glyph, while underlined words remain', () => {
   const p = fixture();
   for (let x = 100; x < 400; x++) p.rect(x, 123 + Math.floor(x / 60) % 3, 1, 2);
