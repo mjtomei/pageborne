@@ -105,4 +105,7 @@ test('front matter stays alongside chapters without promoting figure captions', 
   assert.ok(result.some(e => e.title === 'LIST OF FIGURES AND TABLES' && e.page === 5));
   assert.ok(result.some(e => e.title === 'SUMMARY' && e.page === 6));
   assert.ok(!result.some(e => e.title.startsWith('FIGURE')));
+  assert.deepEqual(pdfNavigationSanity([{ title: 'FOREWORD', page: 2 }], {
+    candidates: [{ role: 'contents', title: 'Foreword', reference: 'i', page: 4 }], pages: 20,
+  }).issues, [], 'front matter before the printed contents is already resolved');
 });

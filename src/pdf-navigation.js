@@ -200,7 +200,9 @@ export function pdfNavigationSanity(sections, { candidates = [], pages = Infinit
     seen.add(identity); previous = entry.page;
   }
   const contents = candidates.filter(e => e.role === 'contents');
-  for (const entry of contents) if (!sections.some(s => s.page > entry.page && similarTitle(s.title, entry.title)))
+  // A foreword/preface may precede the contents page. It is a resolved
+  // destination even though it cannot establish the later body-page offset.
+  for (const entry of contents) if (!sections.some(s => s.page !== entry.page && similarTitle(s.title, entry.title)))
     issues.push({ code: 'unresolved-contents', page: entry.page, title: entry.title });
   return { checked: sections.length, contents: contents.length, issues };
 }
