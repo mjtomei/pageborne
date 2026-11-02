@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile, rename, lstat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { libraryIdentity } from './pageborne-library.js';
+import { installReadingActivity } from './pageborne-reading-activity.js';
 
 const queues = new Map();
 const validName = value => value === null || typeof value === 'string' && value.length <= 220
@@ -97,6 +98,7 @@ export function createReaderState({ libraryDir = process.env.PAGEBORNE_LIBRARY_D
 }
 export function installReaderState(router, options = {}) {
   const store = createReaderState(options);
+  installReadingActivity(router, { ...options, identity: () => store.read() });
   router.get('/pageborne/reader-state', async (_req, res) => {
     try { res.json(await store.read()); } catch { res.status(500).json({ error: 'Could not read library conversation links.' }); }
   });

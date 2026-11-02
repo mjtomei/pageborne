@@ -42,6 +42,10 @@ import { automaticTerminalConfig, migrateTerminalPreferences } from './terminal-
 import { WebReading } from './web-reading.js';
 import { SharedReaderState, scopedReaderConfig } from './shared-reader-state.js';
 import { desktopPdfCache } from './desktop-pdf-cache.js';
+import { ReadingTracker, ReadingLog } from './reading-activity.js';
+import { browserReadingStorage, phoneReadingStorage, ReadingSync } from './reading-storage.js';
+import { glassesReadingUnits } from './reading-view.js';
+import { ReadingHistoryUI } from './reading-history-ui.js';
 
 const $ = id => document.getElementById(id);
 let webReading, sharedReader, PdfDocument;
@@ -91,6 +95,7 @@ const browserStore = new LocalLibrary({ lazy: true });
 let documentLoadController = null;
 let pdfPreparationCache = new PdfPreparationCache(browserPdfStorage(browserStore));
 let store = browserStore; let phonePreferences = null; let openingLibrary = null;
+let readingLog = null, readingLayout = null, readingPreview = null;
 const previewContext = $('preview').getContext('2d');
 
 function notice(text, error = false) {
@@ -161,7 +166,8 @@ const glasses = new GlassesDisplay({ diagnostics, onStatus: text => {
   if (!glasses.suspended) askUI?.acceptFrame(frame);
   // Wake again once the whole transfer releases the display lane.
   if (reader.playing && ['auto', 'speed'].includes(reader.mode)) scheduleAnimation();
-}, onReadingAccepted: () => {
+}, onReadingAccepted: frame => {
+  sampleReading(frame);
   // Words can already be read while the footer is still being transferred.
   if (reader.playing && ['auto', 'speed'].includes(reader.mode)) scheduleAnimation();
 } });
@@ -241,6 +247,65 @@ if (WEB) {
     library: () => setLibraryOpen(true), settings: () => setSettingsOpen(true) });
 }
 setInterval(() => { if (!document.hidden && libraryReady) void sharedReader.sync(); }, 5000);
+function readingSessions(entry) {
+  const sessions = [...(entry.sessions || [])];
+  for (const [key, binding] of Object.entries(preferences.askSessions || {})) {
+    let parts; try { parts = JSON.parse(key); } catch { continue; }
+    if (parts[0] === entry.document.key && parts[1] === 'terminal' && parts[2] === entry.scope && binding?.sessionId)
+      sessions.push({ agent: parts[3], id: binding.sessionId, ...(binding.cwd ? { cwd: binding.cwd } : {}) });
+  }
+  const remote = sharedReader.remote;
+  if (remote && entry.scope === `pageborne:${remote.instanceId}:${remote.libraryId}`) for (const record of remote.records) {
+    if (record.document === entry.document.id) for (const session of record.sessions)
+      sessions.push({ agent: record.agent, id: session.id, ...(session.cwd ? { cwd: session.cwd } : {}) });
+  }
+  return [...new Map(sessions.filter(s => ['claude', 'codex'].includes(s.agent)).map(s => [`${s.agent}:${s.id}`, s])).values()].slice(-100);
+}
+const readingTracker = new ReadingTracker(entry => {
+  if (readingLog) void readingLog.add([{ ...entry, sessions: readingSessions(entry) }]).catch(readingSaveError);
+});
+function readingSaveError(error) { notice(`Reading history could not be saved: ${error.message}`, true); }
+const readingSync = new ReadingSync({
+  log: () => readingLog, scope: () => readerConnection().chatScope, sessions: readingSessions,
+  client: () => libraryReady && connectionMode(readerConnection()) === 'terminal' ? new EvenTerminal(readerConnection(), askUI.options()) : null,
+  changed: () => readingHistory.render(),
+});
+const syncReading = async () => { await readingLog?.flush().catch(readingSaveError); await sharedReader.sync(); await readingSync.sync(); };
+syncReading.status = () => readingSync.status;
+const readingHistory = new ReadingHistoryUI({
+  log: () => readingLog, sync: syncReading, sessions: readingSessions,
+  pause: () => { reader.pause(); readingTracker.leave(); },
+  exists: entry => entry.scope === (readerConnection().chatScope || '') && snapshot?.documents.some(d => d.id === entry.document.id),
+  openDocument: async entry => { await selectDocument(entry.document.id); setLibraryOpen(false, false); },
+  conversation: async (entry, session, signal) => {
+    const config = readerConnection();
+    if (entry.scope !== (config.chatScope || config.endpoint)) throw new Error('Connect to the desktop library where this conversation was recorded.');
+    return new EvenTerminal({ ...config, agent: session.agent }, askUI.options()).conversation({ sessionId: session.id }, signal);
+  },
+});
+$('reading-history-open').onclick = () => void readingHistory.open();
+setInterval(() => { if (libraryReady && !document.hidden) void syncReading(); }, 30000);
+function sampleReading(frame, now = performance.now()) {
+  if (!libraryReady || !readingLog || !active || !layout || !WEB && !frame) { readingTracker.observe(null, now); return; }
+  const blocked = readingHistory.dialog.open || footnotesView || (WEB
+    ? document.hidden || webReading.dialog.open || $('library-panel').dataset.open === 'true' || !$('shared-settings').hidden
+    : glasses.bridge ? !glasses.ready || glasses.suspended || frame.selection !== selectionVersion
+      : document.hidden || previewMenu || frame.selection !== selectionVersion || $('library-panel').dataset.open === 'true' || !$('shared-settings').hidden);
+  if (blocked) { readingTracker.observe(null, now); return; }
+  const displayed = WEB ? layout : frame?.layout;
+  // Reflow/font/partial-load rebuilds aren't page turns.
+  if (readingLayout !== displayed) { readingTracker.reset(); readingLayout = displayed; }
+  if (!WEB && (frame.message || frame.dialog || frame.picker || frame.positionPicker || frame.modePicker)) { readingTracker.observe(null, now); return; }
+  const units = WEB ? webReading.readingUnits() : glassesReadingUnits(frame, frame.layout === reader.pageLayout ? reader.speedReading.entries : undefined), config = readerConnection();
+  readingTracker.observe({ document: { id: active.id, key: active.positionKey, title: String(active.title).slice(0, 300), revision: active.revision },
+    scope: config.chatScope || '', platform: WEB ? 'web' : glasses.bridge ? 'glasses' : 'preview',
+    position: WEB ? readingPercent() : Math.min(100, Math.max(0, 100 * frame.y / (displayed?.maxY || 1))), units }, now);
+}
+async function preserveReadingSessions(doc) {
+  if (!readingLog) return;
+  const entries = readingLog.entries.filter(e => e.document.key === doc.positionKey).map(e => ({ ...e, sessions: readingSessions(e) }));
+  if (entries.length) await readingLog.add(entries);
+}
 function dispatchAction(action, source = 'glasses') {
   if (source === 'glasses') previewInput?.cancel();
   else diagnostics.log('gesture', { action, source });
@@ -549,6 +614,7 @@ async function trackPdfPreparation(work) {
 }
 
 async function selectDocument(id, save = true) {
+  readingTracker.leave(); readingLayout = null;
   documentLoadController?.abort();
   documentLoadController = null;
   previewInput?.cancel(); previewMenu = null;
@@ -1178,6 +1244,8 @@ async function deleteDocument(id) {
   if (!doc) return;
   reader.pause(); setLibraryBusy(true);
   try {
+    if (active?.id === id) readingTracker.leave();
+    await preserveReadingSessions(doc);
     const result = await store.remove(id);
     await pdfPreparationCache.remove(id).catch(error => diagnostics.error('pdf-cache-delete-error', error));
     rememberPosition(); snapshot = result.snapshot; deleteId = null;
@@ -1497,11 +1565,12 @@ previewInput = installPreviewInput($('preview'), {
 document.querySelector('.brand').onclick = event => { event.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); };
 function flushPosition() { rememberPosition(); phonePreferences?.flush(); }
 document.addEventListener('visibilitychange', () => {
+  if (document.hidden && (WEB || !glasses.bridge)) readingTracker.observe(null);
   if (document.hidden && (askUI?.phoneMic.capturing || askUI?.phoneMic.pending)) askUI.close();
   diagnostics.log('visibility', { state: document.visibilityState }); flushPosition();
   if (!document.hidden) { pdfProgressRefresh?.(true); dirty = true; animate(performance.now(), true); }
 });
-window.addEventListener('pagehide', () => { askUI?.cancelPairing(); askUI?.close(); askUI?.speech.dispose(); flushPosition(); });
+window.addEventListener('pagehide', () => { readingTracker.leave(); void readingLog?.flush().catch(readingSaveError); askUI?.cancelPairing(); askUI?.close(); askUI?.speech.dispose(); flushPosition(); });
 window.addEventListener('pageshow', event => { if (event.persisted) voiceStartup = startVoiceSetup(); });
 
 
@@ -1511,6 +1580,7 @@ function nativePdfFrame() {
   return reader.mode === 'auto' ? reader.autoPosition.window(reader.y) : pdfNativeWindow(layout, reader.y);
 }
 function animate(now, immediate = false) {
+  sampleReading(glasses.bridge ? glasses.readingFrame : readingPreview, now);
   if (WEB) { askUI?.session.tick(now, reducedMotion.matches); webReading?.update(); return; }
   if (askUI?.speech.setup.blocked) {
     playbackBlocked = true;
@@ -1593,6 +1663,8 @@ function animate(now, immediate = false) {
     }
     frame.bitmap ||= speedTitleBitmap(frame.wordFrame);
     paintFrame(previewContext, frame); renderControls();
+    readingPreview = frame;
+    if (!glasses.bridge && !window.flutter_inappwebview?.callHandler) sampleReading(frame, now);
     if (!glasses.bridge && !window.flutter_inappwebview?.callHandler && !document.hidden) askUI?.acceptFrame(frame);
     if (!layout || rowAt(layout, reader.y) !== lastPassage) renderPassage();
     const key = `${active?.id}:${Math.floor(frame.y)}:${frame.mode}:${frame.playing}:${layout?.size}:${reader.speed}:${frame.nativePdf?.reveal}:${frame.wordFrame?.start}:${frame.wordFrame?.end}:${frame.wordRate}:${frame.finished}:${frame.pauseAtTitles}:${frame.pageRemainingSeconds}:${positionPicker ? `position-${positionPicker.kind}-${positionPicker.index}-${positionPicker.percent}-${positionPicker.step}-${positionPicker.entries?.length}` : picker?.index ?? 'reader'}:${librarySyncLabel}:${!!librarySync}:${frame.message?.body || ''}:${frame.message?.status || ''}:${frame.message?.statusCenter || ""}:${frame.message?.statusLeft || ""}:${frame.message?.statusRight || ""}:${JSON.stringify(frame.dialog || null)}:${frame.modePicker?.index ?? ''}:${!!footnotesView}:${frame.askStatus}:${frame.askUnavailable}`;
@@ -1682,13 +1754,16 @@ async function openLibrary() {
       delete preferences.preloadText; delete preferences.speed;
       applyAppTextSize();
       phonePreferences = nextPreferences;
+      readingLog = new ReadingLog(phoneReadingStorage(kv), () => readingHistory.render());
       if (DEBUG && !voiceDiagnosticsInstalled) {
         const savedDiagnostics = new AtomicPhoneValue(kv, 'diagnostics');
         diagnostics.restore(await savedDiagnostics.read().catch(() => null));
         installDiagnosticCheckpoint(diagnostics, savedDiagnostics);
         voiceDiagnosticsInstalled = true;
       }
-    } else snapshot = await browserStore.read();
+    } else { snapshot = await browserStore.read(); readingLog = new ReadingLog(browserReadingStorage(browserStore), () => readingHistory.render()); }
+    try { await readingLog.load(); } catch (error) { readingSaveError(error); }
+    $('reading-history-open').disabled = false;
     await pdfPreparationCache.retain(snapshot.documents.map(doc => doc.id)).catch(error => diagnostics.error('pdf-cache-cleanup-error', error));
     libraryReady = true; $('import').disabled = false; notice('');
     if (WEB) await sharedReader.sync(); else void sharedReader.sync();

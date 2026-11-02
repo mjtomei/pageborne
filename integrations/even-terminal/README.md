@@ -113,7 +113,9 @@ New owners run in a private `tmux -L pageborne-claude` server, using normal Clau
 
 ## Shared reader links
 
-Copy `pageborne-reader-state.js` and the matching `pageborne-library.js` beside `dist/routes/core.js`, then import `installReaderState` and call `installReaderState(router)` on the existing authenticated API router. Restart only the HTTP bridge, preserving its state directory and pairing token; native Claude/Codex owners keep running.
+Copy `pageborne-reader-state.js`, `pageborne-reading-activity.js` and the matching `pageborne-library.js` beside `dist/routes/core.js`, then import `installReaderState` and call `installReaderState(router)` on the existing authenticated API router. Restart only the HTTP bridge, preserving its state directory and pairing token; native Claude/Codex owners keep running.
+
+The reader-state installer also provides authenticated `GET /pageborne/reading-activity` (day/revision index), `GET /pageborne/reading-activity/:day` (events) and `POST /pageborne/reading-activity/:day` (`{entries}`, up to 50 per request). Events merge by UUID; only their discovered session links may grow. They include title, original filename/reading identity, local day, timestamps, word count, dwell, location, a 240-character excerpt and session references, never pairing credentials. Each Terminal instance stores separate atomic daily JSON files in `<library>/.pageborne/reading-activity/<instance-id>/`. Document removal does not remove these files. Old clients and the stock glasses Terminal app are unaffected. Older extensions return 404; Pageborne continues recording locally until the extension is upgraded.
 
 Authenticated `GET /api/pageborne/reader-state` returns the Terminal instance ID, library ID and per-document/model session links. `POST` accepts `{ document, agent, sessionId, cwd?, anchors }`; `document` is a library filename or null for Librarian, and an anchor has `{ id, aliases, position, page? }`. Coordinates merge by stable question identity without replacing another device's older questions. No question/answer text, pairing token or model weights are saved in this metadata.
 

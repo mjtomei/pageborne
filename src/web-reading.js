@@ -174,6 +174,46 @@ export class WebReading {
       this.update();
     }
   }
+  readingUnits() {
+    if (!this.layout || this.dialog.open) return [];
+    const viewport = this.scroller.getBoundingClientRect();
+    const key = `${this.scroller.scrollTop}:${viewport.width}:${viewport.height}:${this.scroller.scrollHeight}:${this.layout.textRevision}`;
+    if (this.readingCache?.layout === this.layout && this.readingCache.key === key) return this.readingCache.units;
+    const units = [], range = document.createRange();
+    this.readingNodes ||= new WeakMap();
+    for (const [index, target] of this.targets.entries()) {
+      const rect = target.el.getBoundingClientRect();
+      if (rect.bottom <= viewport.top || rect.top >= viewport.bottom) continue;
+      if (this.pdf) {
+        if (!target.el.dataset.rendered) continue;
+        const block = this.layout.blocks[index];
+        if (!block.textLoaded) { void this.pdf.text(block.page).catch(() => {}); continue; }
+        const scale = rect.height / block.height;
+        for (const item of block.readingItems || []) {
+          const top = rect.top + item.y * scale, bottom = top + item.height * scale;
+          if (top >= viewport.top && bottom <= viewport.bottom) units.push(item);
+        }
+      } else {
+        const walker = document.createTreeWalker(target.el, NodeFilter.SHOW_TEXT);
+        let textNode, n = 0;
+        while ((textNode = walker.nextNode())) {
+          const number = n++; range.selectNodeContents(textNode);
+          const bounds = range.getBoundingClientRect();
+          if (bounds.bottom <= viewport.top || bounds.top >= viewport.bottom) continue;
+          if (!this.readingNodes.has(textNode)) this.readingNodes.set(textNode, [...textNode.textContent.matchAll(/\S*[\p{L}\p{N}]\S*/gu)]);
+          const words = this.readingNodes.get(textNode);
+          const box = i => { const word = words[i]; range.setStart(textNode, word.index); range.setEnd(textNode, word.index + word[0].length); return range.getBoundingClientRect(); };
+          let low = 0, high = words.length;
+          while (low < high) { const mid = (low + high) >>> 1; if (box(mid).bottom <= viewport.top) low = mid + 1; else high = mid; }
+          for (let i = low; i < words.length; i++) {
+            const r = box(i); if (r.top >= viewport.bottom) break;
+            if (r.top >= viewport.top && r.bottom <= viewport.bottom) units.push({ key: `md:${index}:${number}:${i}`, words: 1, text: words[i][0] });
+          }
+        }
+      }
+    }
+    this.readingCache = { layout: this.layout, key, units }; return units;
+  }
   goTo(y, page) {
     if (!this.layout || !this.targets.length) return;
     if (this.pdf && page) y = this.layout.blocks[Math.max(0, Math.min(this.layout.blocks.length - 1, page - 1))].y;
@@ -198,7 +238,7 @@ export class WebReading {
         const canvas = document.createElement('canvas'); canvas.setAttribute('aria-label', el.getAttribute('aria-label'));
         el.replaceChildren(canvas);
         void this.pdf.render(Number(el.dataset.page), canvas, rect.width).then(() => {
-          if (canvas.isConnected) el.dataset.rendered = key;
+          if (canvas.isConnected) { el.dataset.rendered = key; this.readingCache = null; }
         }).catch(error => {
           if (canvas.isConnected && error.name !== 'RenderingCancelledException') { el.textContent = 'Could not draw this page. Scroll away and back to retry.'; delete el.dataset.renderWidth; }
         });

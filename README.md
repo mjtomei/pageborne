@@ -9,11 +9,16 @@ A reader for Even G2 glasses.
 - Figures and tables from PDFs in a gallery on your phone
 - Underlined scan text reflowed as prose, with written margin annotations in a separate phone gallery
 - Timed autoscroll and speed reading
+- Daily reading history with a words-read graph and retained conversation links
 - An experimental phone/iPad web reader that shares the desktop library and conversations
 
 ## Reading and conversations
 
 G2 supports native text, PDF reflow/figures, page reading, timed autoscroll and speed reading. PDFs can contain up to 1,000 pages within the 16 MiB file limit. Ready pages become readable while the rest prepare.
+
+**Reading history** in the library shows a daily word-count graph and a page-by-page log with titles, locations, short excerpts and links to desktop conversations. It estimates document reading from visible text and dwell time; Ask conversations are excluded. Words count when you move past them at 10–900 words/minute. Overlapping panes retain their dwell without counting the same exposure twice. Fast paging, image-only views, covered/background web pages and views idle for over five minutes are excluded; intentional rereading counts again. This is an estimate, not eye tracking. Web PDFs need an embedded text layer to contribute words.
+
+History starts when this feature is installed, is stored separately from the originals, and remains after document deletion. With the updated optional reader-state extension, it syncs through the desktop library and merges offline entries without duplicates. Linked conversations open in a history viewer even when the source document is gone; the desktop session must still exist and be reachable. Days follow the reading device’s local date.
 
 An optional [desktop OCR daemon](desktop/ocr/README.md) uses Xiaomi-OCR-0 to prepare scanned library PDFs ahead of reading. Completed preparations sync through the shared library and stay cached on the phone. The existing on-device OCR remains available when the desktop has no matching result.
 

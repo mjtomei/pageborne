@@ -1,4 +1,5 @@
-import { getDocument, PDFWorker } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { getDocument, PDFWorker, Util } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { readingWords } from './reading-activity.js';
 import PdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.mjs?worker&inline';
 import { LocalPdfResources, PdfDecoderFallbacks } from './pdf-resources.js';
 import { base64ToBytes } from './binary.js';
@@ -37,11 +38,24 @@ export class WebPdf {
     await this.text(1);
     return this.layout;
   }
-  async text(number) {
+  text(number) {
+    this.textRequests ||= new Map();
+    if (!this.textRequests.has(number)) this.textRequests.set(number, this.loadText(number).finally(() => this.textRequests.delete(number)));
+    return this.textRequests.get(number);
+  }
+  async loadText(number) {
     const block = this.layout?.blocks[number - 1];
     if (!block || block.textLoaded || this.closed) return;
     const page = await this.pdf.getPage(number), text = await readPdfText(page);
-    if (!this.closed) { block.text = text.items.map(item => item.str || '').join(' '); block.textLoaded = true; this.layout.textRevision = (this.layout.textRevision || 0) + 1; }
+    if (!this.closed) {
+      const viewport = page.getViewport({ scale: block.scale });
+      block.readingItems = text.items.flatMap((item, index) => {
+        const words = readingWords(item.str); if (!words || !item.transform) return [];
+        const t = Util.transform(viewport.transform, item.transform), height = Math.hypot(t[2], t[3]);
+        return [{ key: `pdf:${number}:${index}`, words, text: item.str, page: number, y: t[5] - height, height }];
+      });
+      block.text = text.items.map(item => item.str || '').join(' '); block.textLoaded = true; this.layout.textRevision = (this.layout.textRevision || 0) + 1;
+    }
   }
   async render(number, canvas, width) {
     const page = await this.pdf.getPage(number);

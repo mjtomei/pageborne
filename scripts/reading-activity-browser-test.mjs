@@ -1,0 +1,103 @@
+import { chromium, expect } from '@playwright/test';
+import assert from 'node:assert/strict';
+import express from 'express';
+import { createServer } from 'vite';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
+import { installLibrarySync } from '../integrations/even-terminal/pageborne-library.js';
+import { installReaderState, createReaderState } from '../integrations/even-terminal/pageborne-reader-state.js';
+import { pdfFixture } from '../test/fixtures/pdfs.mjs';
+process.env.PAGEBORNE_RELEASE_ASK_ORIGINS = 'http://127.0.0.1:5173';
+
+const root = await mkdtemp(path.join(tmpdir(), 'reading-browser-')), libraryDir = path.join(root, 'library');
+await mkdir(libraryDir); await mkdir('test-results/reading-activity', { recursive: true });
+const prose = '# Reading record\n\n' + Array.from({ length: 45 }, (_, i) => `## Section ${i + 1}\n\n` + 'Reading carefully preserves the ideas while moving through a useful document. '.repeat(8)).join('\n\n');
+await writeFile(path.join(libraryDir, 'paper.md'), prose);
+await writeFile(path.join(libraryDir, 'original.pdf'), pdfFixture());
+const options = { libraryDir, stateDir: path.join(root, 'state') }, state = createReaderState(options);
+await state.update({ document: 'paper.md', agent: 'claude', sessionId: 'preserved-session', anchors: [] });
+const app = express(); app.use(express.json({ limit: '2mb' }));
+const api = express.Router(); installLibrarySync(api, options); installReaderState(api, options);
+api.get('/info', (_req, res) => res.json({ pageborne: { conversationSync: 1 } }));
+api.get('/events', (_req, res) => { res.setHeader('Content-Type', 'text/event-stream'); res.write(': connected\n\n'); });
+api.get('/pageborne/conversation', (req, res) => res.json({ version: 1, sessionId: req.query.sessionId, state: 'idle', turns: [{ id: 'turn', question: 'What did I read?', answer: 'The conversation is still available after deleting the document.', state: 'complete' }] }));
+app.use('/api', api); const backend = app.listen(0, '127.0.0.1'); await new Promise(resolve => backend.once('listening', resolve));
+let browser;
+try {
+  browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true, args: ['--js-flags=--max-old-space-size=384'] });
+  for (const mode of ['release', 'web']) {
+    const vite = await createServer({ mode, cacheDir: `.state/vite-reading-${mode}`, clearScreen: false,
+      plugins: [{ name: 'reading-test', transform(code, id) {
+        if (id.endsWith('/src/speech-setup.js')) return code.replace('start(initialize) {', 'start(initialize) { this.blocked = false; return Promise.resolve();');
+        if (id.endsWith('/src/main.js')) return code + '\nwindow.__reading = { get entries() { return readingLog?.entries || []; }, get units() { return [...readingTracker.units.values()].map(({key,words,text}) => ({key,words,text})); }, sync: syncReading, remove: deleteDocument, next: () => { reader.pageStep(1); }, get position() { return reader.y; } };';
+      }, configureServer(server) { server.middlewares.use('/web/config', (req, res) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ mode: 'terminal', endpoint: `http://${req.headers.host}`, token: 'fixture', agent: 'claude' })); }); } }],
+      server: { host: '127.0.0.1', port: 5173, strictPort: true, hmr: false, watch: null, proxy: { '/api': `http://127.0.0.1:${backend.address().port}` } } });
+    await vite.listen();
+    const context = await browser.newContext({ viewport: { width: 440, height: 806 } }), page = await context.newPage(), errors = [];
+    page.on('pageerror', e => errors.push(e.message));
+    page.on('response', async response => { if (response.status() >= 400 && response.url().includes('/api/')) console.log(response.status(), new URL(response.url()).pathname, await response.text().catch(() => '')); });
+    try {
+      if (mode === 'release') await page.addInitScript(() => {
+        localStorage.setItem('even-reader:preferences:v1', JSON.stringify({ ask: { mode: 'terminal', endpoint: location.origin, token: 'fixture', agent: 'claude' } }));
+        window.flutter_inappwebview = { async callHandler(_, payload) {
+          const m = JSON.parse(payload);
+          if (m.method === 'getLocalStorage') return localStorage.getItem(`sdk:${m.data.key}`) || '';
+          if (m.method === 'setLocalStorage') { localStorage.setItem(`sdk:${m.data.key}`, m.data.value); return true; }
+          return ['createStartUpPageContainer', 'updateImageRawData'].includes(m.method) ? 0 : true;
+        } };
+      });
+      await page.goto(vite.resolvedUrls.local[0], { waitUntil: 'networkidle' });
+      if (mode === 'release') {
+        await expect(page.locator('#import')).toBeEnabled();
+        await page.locator('#file-picker').setInputFiles({ name: 'paper.md', mimeType: 'text/markdown', buffer: Buffer.from(prose) });
+      }
+      await expect(page.locator('[data-document-id="paper.md"]')).toBeAttached({ timeout: 30000 });
+      if (await page.locator('#library-panel').getAttribute('data-open') !== 'true') await page.locator('#library-toggle').click();
+      await page.locator('[data-document-id="paper.md"] .document-card').click();
+      await page.evaluate(() => window.__reading.sync());
+      await expect.poll(() => page.evaluate(() => window.__reading.units.length)).toBeGreaterThan(10);
+      const initial = await page.evaluate(() => window.__reading.entries.reduce((n, e) => n + e.words, 0));
+      await page.waitForTimeout(mode === 'web' ? 15000 : 6500);
+      if (mode === 'release') await page.evaluate(() => window.__reading.next());
+      else await page.locator('#web-document').evaluate(el => { el.scrollTop += el.clientHeight - 60; });
+      await expect.poll(() => page.evaluate(() => window.__reading.entries.reduce((n, e) => n + e.words, 0))).toBeGreaterThan(initial);
+      const read = await page.evaluate(() => window.__reading.entries.reduce((n, e) => n + e.words, 0));
+      if (mode === 'release') await page.evaluate(() => window.__reading.next());
+      else await page.locator('#web-document').evaluate(el => { el.scrollTop += el.clientHeight; });
+      await page.waitForTimeout(400);
+      assert.ok(await page.evaluate(() => window.__reading.entries.reduce((n, e) => n + e.words, 0)) <= read + 15, 'fast paging cannot credit a whole screen');
+      await page.evaluate(() => window.__reading.sync());
+      if (await page.locator('#library-panel').getAttribute('data-open') !== 'true') await page.locator('#library-toggle').click();
+      await page.locator('#reading-history-open').click();
+      await expect(page.locator('.reading-chart button')).toHaveCount(30);
+      await expect(page.locator('.reading-total')).not.toHaveText('0 words');
+      await page.screenshot({ path: `test-results/reading-activity/${mode}-history.png` });
+      await page.locator('#reading-history').getByRole('button', { name: 'Close', exact: true }).click();
+      await page.evaluate(() => window.__reading.remove('paper.md'));
+      await page.locator('#reading-history-open').click();
+      await expect(page.locator('.reading-entries')).toContainText('Document no longer in this library');
+      await page.locator('.reading-entries').getByRole('button', { name: 'Claude conversation', exact: true }).first().click();
+      await expect(page.locator('.reading-conversation')).toContainText('still available after deleting');
+      await page.screenshot({ path: `test-results/reading-activity/${mode}-archived-chat.png` });
+      await page.reload({ waitUntil: 'networkidle' });
+      if (await page.locator('#library-panel').getAttribute('data-open') !== 'true') await page.locator('#library-toggle').click();
+      await page.locator('#reading-history-open').click();
+      await expect(page.locator('.reading-total')).not.toHaveText('0 words');
+      await expect(page.locator('.reading-entries')).toContainText('Reading record');
+      if (mode === 'web') {
+        await page.setViewportSize({ width: 834, height: 1194 });
+        await page.screenshot({ path: 'test-results/reading-activity/ipad-history.png' });
+        await page.locator('#reading-history').getByRole('button', { name: 'Close', exact: true }).click();
+        await page.locator('[data-document-id="original.pdf"] .document-card').click();
+        await expect.poll(() => page.evaluate(() => window.__reading.units.length), { timeout: 30000 }).toBeGreaterThan(0);
+        assert.ok((await page.evaluate(() => window.__reading.units)).every(unit => typeof unit.text === 'string'));
+      }
+      assert.deepEqual(errors, []);
+      console.log(`${mode}: reading, fast paging, graph, deletion, archived chat, reload passed`);
+    } catch (error) {
+      console.log(mode, errors, await page.evaluate(() => ({ entries: window.__reading?.entries, status: document.querySelector('#notice')?.textContent })).catch(() => ({})));
+      throw error;
+    } finally { await context.close(); await vite.close(); }
+  }
+} finally { await browser?.close(); await new Promise(resolve => backend.close(resolve)); await rm(root, { recursive: true, force: true }); }
