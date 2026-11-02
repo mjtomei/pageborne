@@ -14,11 +14,11 @@ export async function pdfPreparationKey(bytes, options, pdfjsVersion) {
 
 export function packPdfPreparation(layout, marginMasks, pageScales) {
   if (layout.preparation?.complete === false) throw new Error('PDF preparation is still incomplete.');
-  const { blocks, headings, blockY, lineStarts, height, maxY, pages, size, annotations = [], navigation } = layout;
+  const { blocks, headings, blockY, lineStarts, height, maxY, pages, size, annotations = [], navigation, reflowSanity } = layout;
   return { version: PDF_PREPARATION_VERSION, marginMasks: [...marginMasks], pageScales: [...pageScales],
     layout: { blocks: blocks.map(block => ({ ...block, ...(block.reflow ? { reflow: { ...block.reflow,
       rows: block.reflow.rows.map(({ items, ...row }) => row) } } : {}) })), headings, blockY, lineStarts, height, maxY, pages, size, annotations,
-      ...(navigation ? { navigation } : {}) } };
+      ...(navigation ? { navigation } : {}), ...(reflowSanity ? { reflowSanity } : {}) } };
 }
 export function validatePdfPreparation(saved) {
   const layout = saved?.layout;

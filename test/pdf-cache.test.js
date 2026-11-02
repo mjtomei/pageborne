@@ -30,6 +30,7 @@ test('saved geometry keeps native pages, figures and exact source anchors throug
     rows: Array.from({ length: 20 }, (_, i) => ({ text: `Recognized row ${i}`, y: i * 25, start: i * 17, end: i * 17 + 16, sourceY: 10 + i * 4, items: [line] })) } };
   const figure = { x: 20, y: 200, width: 500, height: 220, kind: 'figure', text: 'Figure', lines: [], colorProfile: { background: [255, 255, 255] } };
   const layout = createPdfLayout([{ number: 1, blocks: [prose, figure] }, { number: 2, blocks: [prose] }]);
+  layout.reflowSanity = { version: 1, complete: true, checkedPages: 2, issues: [] };
   layout.pdf = { circular: layout }; layout.sourcePages = ['deliberately excluded'];
   const masks = new Map([[1, [{ x: 2, y: 3, width: 30, height: 10 }]]]); const scales = new Map([[1, 1.5], [2, 1.5]]);
   const encoded = JSON.stringify(packPdfPreparation(layout, masks, scales));
@@ -38,6 +39,7 @@ test('saved geometry keeps native pages, figures and exact source anchors throug
   validatePdfPreparation(checked);
   assert.equal(JSON.stringify(checked), encoded, 'validation does not mutate or expand the saved layout');
   const restored = unpackPdfPreparation(JSON.parse(encoded));
+  assert.deepEqual(restored.layout.reflowSanity, layout.reflowSanity);
   assert.deepEqual(restored.marginMasks, masks); assert.deepEqual(restored.pageScales, scales);
   assert.deepEqual(restored.layout.pages, layout.pages);
   assert.deepEqual(restored.layout.nativeRuns, layout.nativeRuns);

@@ -172,3 +172,50 @@ regressions. Keys are PDF source SHA-256 values; each value may contain
 `chapters` (physical PDF page numbers), `entries` (`title`, `page`, optional
 `level`), and `noIssues: true` or an exact `issues` list. Keep source PDFs,
 expectations and reports with private library data, outside Git.
+
+## Text left as images
+
+The desktop daemon also compares final reading blocks against the saved text
+from **before** layout. A full-page fallback no longer contains text boxes, so
+checking only those final boxes would miss this failure. Each completed
+preparation stores `layout.reflowSanity`, and the daemon emits a
+`pdf-reflow-check` event when it first audits a new or existing preparation.
+This audit reads checkpoints one page at a time; it never starts recognition,
+changes layout, or needs a GPU. Missing checkpoints make the audit incomplete.
+
+It flags full-page images containing substantial recognized prose, short prose
+continuations and contents lists; pages where most recognized text remains in
+image blocks; and recognized prose with no reading blocks. Reports give physical
+PDF page numbers, recognized and reflowed word counts, and confidence/structured
+content evidence. Sparse covers and labels are not flagged just for having text.
+Tables, diagrams and screenshots can legitimately trigger review, especially
+when mixed with prose. A flag is not proof that all of the page can safely be
+reflowed, and it never removes an original image or forces uncertain text into
+the reader.
+
+Audit the entire completed library without rendering PDFs or writing the cache:
+
+```sh
+npm run audit:pdf-reflow -- --root /path/to/library/.pageborne/ocr/ENGINE \
+  --output /private/path/reflow-report.json
+```
+
+Add `--strict` to fail on any flagged page. For regression checks, pass
+`--expect /private/path/reflow-expectations.json`. Each source SHA-256 maps to:
+
+```json
+{
+  "PDF_SOURCE_SHA256": {
+    "mustReflow": [12, 16],
+    "imagePages": [1, 2, 85],
+    "knownIssues": [{ "page": 85, "code": "text-page-as-image" }]
+  }
+}
+```
+
+This fails for a newly rasterized page, lost expected text, a new warning,
+missing recognition or an unaccounted-for document. Fewer image pages are allowed
+as fixes land. Known issues stay visible in the report and still fail `--strict`;
+recording a baseline does not declare existing bugs fixed. Keep actual source
+hashes, reports and book-specific expectations private. Synthetic unit and
+command-line tests cover these checks in the public test suite.

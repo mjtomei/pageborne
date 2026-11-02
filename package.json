@@ -98,7 +98,8 @@
     "test:ocr": "node --test test/desktop-ocr*.test.js && python3 -m unittest discover -s desktop/ocr -p \"test_*.py\"",
     "test:library-storage": "node scripts/library-storage-browser-test.mjs",
     "test:contents": "node scripts/contents-browser-test.mjs",
-    "audit:pdf-navigation": "node scripts/pdf-navigation-audit.mjs"
+    "audit:pdf-navigation": "node scripts/pdf-navigation-audit.mjs",
+    "audit:pdf-reflow": "node scripts/pdf-reflow-audit.mjs"
   },
   "dependencies": {
     "@evenrealities/even_hub_sdk": "0.0.14",
