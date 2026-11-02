@@ -25,7 +25,7 @@ import { pdfPreparationKey, packPdfPreparation, unpackPdfPreparation } from './p
 import { pdfImageFrame } from './pdf-image-frame.js';
 import { associatePdfCaptions, reunitePdfFigureFragments, protectPdfCaptionedExhibits } from './pdf-captions.js';
 import { readPdfNavigation } from './document-contents.js';
-import { pdfNavigationCandidates, pdfNavigationSections } from './pdf-navigation.js';
+import { pdfNavigationCandidates, pdfNavigationSections, pdfNavigationSanity, PDF_NAVIGATION_VERSION } from './pdf-navigation.js';
 
 function textBoxes(content, viewport) {
   return content.items.filter(item => item.str?.trim()).map(item => {
@@ -127,7 +127,7 @@ export class PdfDocument {
     if (this.destroyed) throw new Error('PDF closed.');
     if (this.pdf.numPages > MAX_PDF_PAGES) throw new Error(`This PDF exceeds the ${MAX_PDF_PAGES.toLocaleString('en-US')}-page limit. Split it into smaller files.`);
     this.navigation = await readPdfNavigation(this.pdf);
-    this.navigation.version = 1;
+    this.navigation.version = PDF_NAVIGATION_VERSION;
     this.navigation.sections = [];
     this.navigationCandidates = [];
     if (this.destroyed) throw new Error('PDF closed.');
@@ -135,10 +135,10 @@ export class PdfDocument {
       onProgress('Restoring prepared PDF…');
       this.layout = restored.layout; this.layout.pdf = this;
       const prior = this.layout.navigation;
-      const validPrior = prior?.version === 1 && Array.isArray(prior.sections) && prior.sections.length <= 8192
+      const validPrior = prior?.version === PDF_NAVIGATION_VERSION && Array.isArray(prior.sections) && prior.sections.length <= 8192
         && prior.sections.every(e => typeof e.title === 'string' && e.title.length <= 500 && Number.isInteger(e.page)
-          && e.page > 0 && e.page <= this.pdf.numPages && Number.isFinite(e.point?.x) && Number.isFinite(e.point?.y));
-      if (validPrior) this.navigation.sections = prior.sections;
+          && e.page > 0 && e.page <= this.pdf.numPages && (!e.point || Number.isFinite(e.point.x) && Number.isFinite(e.point.y)));
+      if (validPrior) { this.navigation.sections = prior.sections; this.navigation.sanity = prior.sanity; }
       else if (!this.navigation.outline.length) {
         // Old preparations retain OCR inside raster fallbacks only in the
         // original PDF's hidden text layer. Recover navigation without rerunning
@@ -154,7 +154,8 @@ export class PdfDocument {
           } catch (error) { this.report('pdf-contents-page-error', error, { page: number }); }
           if (number % 10 === 0) { await this.pdf.cleanup(); await this.yieldPreparation(); }
         }
-        this.navigation.sections = pdfNavigationSections(this.navigationCandidates);
+        this.navigation.sections = pdfNavigationSections(this.navigationCandidates, { pages: this.pdf.numPages });
+        this.navigation.sanity = pdfNavigationSanity(this.navigation.sections, { candidates: this.navigationCandidates, pages: this.pdf.numPages });
       }
       this.layout.navigation = this.navigation;
       this.marginMasks = restored.marginMasks; this.pageScales = restored.pageScales;
@@ -168,6 +169,7 @@ export class PdfDocument {
         }
         catch (error) { this.report('pdf-contents-cache-error', error); }
       }
+      this.diagnostics?.log('pdf-navigation-check', this.navigationReport());
       this.checkpoint('ready', { totalBlocks: this.layout.blocks.length, cached: true });
       return this.layout;
     }
@@ -274,6 +276,7 @@ export class PdfDocument {
       }
     }
     if (this.destroyed) throw new Error('PDF closed.');
+    this.diagnostics?.log('pdf-navigation-check', this.navigationReport());
     this.checkpoint('ready', { totalBlocks: this.layout.blocks.length, cached: false });
     return this.layout;
   }
@@ -342,6 +345,14 @@ export class PdfDocument {
     const bodySize = pdfBodySize(textPages);
     return { repeatedMasks, bodySize, noteStyle: pdfFootnoteStyle(textPages, bodySize) };
   }
+  navigationReport() {
+    const navigation = this.layout.navigation;
+    const report = navigation.outline?.length ? pdfNavigationSanity(navigation.outline, { source: 'bookmarks', pages: this.pdf.numPages }) : navigation.sanity;
+    return { version: PDF_NAVIGATION_VERSION, source: navigation.outline?.length ? 'bookmarks' : 'derived',
+      checked: report?.checked || 0, contents: report?.contents || 0,
+      issueCount: report?.issues?.length || 0, issues: (report?.issues || []).slice(0, 40) };
+  }
+
   buildLayout(sourcePages, { reflow, keepRepeatedText, measure, textSize }) {
     // Section ordering annotates its input. Snapshots must not mutate crops
     // that an earlier reader or preview is still using.
@@ -354,7 +365,9 @@ export class PdfDocument {
       return block.annotationLabel ? [{ ...entry, block }, entry] : [{ ...entry, block }];
     }) : null;
     const layout = createPdfLayout(pages, { textSize, readingOrder });
-    layout.navigation = { ...this.navigation, sections: pdfNavigationSections(this.navigationCandidates) };
+    const sections = pdfNavigationSections(this.navigationCandidates, { pages: this.pdf.numPages });
+    layout.navigation = { ...this.navigation, sections,
+      sanity: pdfNavigationSanity(sections, { candidates: this.navigationCandidates, pages: this.pdf.numPages }) };
     layout.pdf = { draw: (y, height, inverted, options) => this.draw(y, height, inverted, { ...options, layout: options?.layout || layout }),
       drawFigure: (block, options) => this.drawFigure(block, options) };
     layout.sourcePages = pages;

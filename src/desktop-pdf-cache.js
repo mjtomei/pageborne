@@ -1,4 +1,5 @@
 import { validatePdfPreparation } from './pdf-cache.js';
+import { PDF_NAVIGATION_VERSION } from './pdf-navigation.js';
 import { base64ToBytes } from './binary.js';
 
 // Probe once per open. A missing/old/offline desktop never blocks local OCR,
@@ -14,7 +15,7 @@ export function desktopPdfCache(local, client, name, current = () => true) {
         const result = await client.api('pageborne/library/preparation', {
           // Older artifacts lack chapter metadata, including OCR hidden by a
           // full-page image. Fetch the upgraded preparation once on first open.
-          body: { name, key, engine: saved?.layout.navigation?.version === 1 ? saved.desktopEngine : undefined }, timeoutMs: 1500,
+          body: { name, key, engine: saved?.layout.navigation?.version === PDF_NAVIGATION_VERSION ? saved.desktopEngine : undefined }, timeoutMs: 1500,
         });
         if (!current()) return saved;
         if (result.state === 'ready' && result.key === key && /^[a-f0-9]{64}$/.test(result.engine)) {

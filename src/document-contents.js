@@ -1,6 +1,6 @@
 import { pdfTextRows } from './pdf-reflow.js';
 import { pdfAnalysisViewport, pdfSourcePoint } from './pdf-orientation.js';
-import { pdfNavigationCandidates, pdfNavigationSections } from './pdf-navigation.js';
+import { pdfNavigationCandidates, pdfNavigationSections, PDF_NAVIGATION_VERSION } from './pdf-navigation.js';
 
 const clean = text => String(text || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 240);
 const key = text => clean(text).toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
@@ -75,6 +75,10 @@ function derivedPdfContents(layout) {
     const index = layout.navigation?.labels?.indexOf(label) ?? -1;
     return index >= 0 ? [{ title, level: 1, page: index + 1 }] : [];
   }));
+  // Current metadata was checked against raw page recognition, including pages
+  // retained as images. A partial reflowed contents list must not replace it.
+  if (layout.navigation?.version === PDF_NAVIGATION_VERSION && layout.navigation.sections?.some(e => ['chapter', 'part'].includes(e.role)))
+    return layout.navigation.sections;
   if (printed.length >= 2) return printed;
 
   let sections = layout.navigation?.sections;
@@ -113,7 +117,10 @@ function derivedPdfContents(layout) {
     const explicit = /^(?:chapter|part|book|section)\s+(?:\d+|[ivxlcdm]+|one|two|three|four|five)\b/i.test(title);
     const next = rows[index + 1];
     const isolated = !next || next.block !== row.block || next.y - row.y > height * 1.5;
-    if (!explicit && !(normal > 0 && height >= normal * 1.22 && isolated && /^[\d.\s]*\p{Lu}/u.test(title))) return [];
+    // Explicit words alone are not evidence: body paragraphs also begin with
+    // "Chapter 2 describes...". Same-size structural headings come from the
+    // geometry detector above; this fallback requires larger typography.
+    if (!(normal > 0 && height >= normal * 1.22 && isolated && /^[\d.\s]*\p{Lu}/u.test(title))) return [];
     return [{ title, level: height >= normal * 1.65 || explicit ? 1 : 2, page: row.block.page,
       point: pdfSourcePoint(row.block, { x: row.items[0].x, y: row.y }) }];
   }).concat(sections);

@@ -106,3 +106,9 @@ test('printed contents match titles or explicit page labels, never assume printe
   const labeled = { ...unmatched, navigation: { labels: ['i', 'ii', '1', '2'] } };
   assert.deepEqual(documentContents(labeled).map(e => e.page), [3, 4]);
 });
+
+test('a chapter reference in ordinary body text cannot enable percentage-replacing navigation', () => {
+  const layout = createPdfLayout([{ number: 1, blocks: [crop('Chapter 7 describes the method used throughout this book', 40), crop(prose, 80)] },
+    { number: 2, blocks: [crop(prose, 40)] }]);
+  assert.deepEqual(documentContents(layout), []);
+});

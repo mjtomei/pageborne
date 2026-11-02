@@ -1,3 +1,4 @@
+import { PDF_NAVIGATION_VERSION } from '../src/pdf-navigation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, readFile, mkdir, symlink } from 'node:fs/promises';
@@ -19,7 +20,7 @@ function prepared() {
     text: line.text, rows: [{ text: line.text, y: 0, start: 0, end: line.text.length, sourceY: 10, items: [line] }] } };
   const layout = createPdfLayout([{ number: 1, blocks: [block,
     { x: 0, y: 50, width: 500, height: 700, kind: 'figure', text: '', lines: [] }] }]);
-  layout.navigation = { version: 1, sections: [] };
+  layout.navigation = { version: PDF_NAVIGATION_VERSION, sections: [] };
   return packPdfPreparation(layout, new Map(), new Map([[1, 1.5]]));
 }
 async function fixture(t) {
@@ -70,13 +71,13 @@ test('verified desktop artifact downloads once, persists offline, and preserves 
   assert.deepEqual(await offline.read(f.key), saved);
 });
 
-test('a phone cache from before chapter navigation receives upgraded OCR metadata once', async t => {
+test('a phone cache with obsolete chapter navigation receives upgraded OCR metadata once', async t => {
   const f = await fixture(t); await f.publish();
-  const old = structuredClone(f.saved); delete old.layout.navigation; old.desktopEngine = engine;
+  const old = structuredClone(f.saved); old.layout.navigation = { version: 1, sections: [] }; old.desktopEngine = engine;
   await f.local.write(f.key, old);
   const before = f.writes();
   const remote = desktopPdfCache(f.local, f.client, f.name);
-  assert.equal((await remote.read(f.key)).layout.navigation.version, 1);
+  assert.equal((await remote.read(f.key)).layout.navigation.version, PDF_NAVIGATION_VERSION);
   assert.equal(f.writes(), before + 1);
   await remote.read(f.key); assert.equal(f.writes(), before + 1);
 });

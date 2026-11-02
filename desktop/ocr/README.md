@@ -134,3 +134,41 @@ preparation, and downloads the result through the library API into the phone
 cache. Its model responses are fixtures: it uses no GPU and is not an OCR
 accuracy benchmark. Python tests cover conservative word correction and killing
 a child process under simulated memory pressure without allocating excess RAM.
+
+## Chapter detection checks
+
+Chapter metadata is versioned separately from OCR and page layout. Updating the
+chapter detector rebuilds this metadata from saved page recognition, including
+pages displayed as full-page images. It does not rerun the model or change the
+reading content. The phone requests an upgraded desktop artifact once when its
+cached navigation is older. Publisher PDF bookmarks retain priority.
+
+For derived navigation, the detector requires heading geometry on both sides of
+a line, recognizes left-aligned numbered headings and nested section numbers,
+and reads printed contents from OCR word boxes. Contents references are matched
+to actual headings. A page offset can resolve an image-only destination only
+when at least three independent heading matches agree; inconsistent pagination
+leaves the reference unresolved. Missing OCR dots are repaired only with a
+unique continuation of the preceding section number. Repeated numbers with
+different titles are retained and flagged, since the source itself may repeat a
+number.
+
+Preparations store a `navigation.sanity` report; phone debug logs include a
+`pdf-navigation-check` event. Checks flag invalid or backward destinations,
+duplicate headings or section numbers, prose-like derived titles and unresolved
+printed contents. These are review signals, not a claim of complete detection.
+The unit suite includes synthetic scanned-textbook geometry, cross-references
+inside prose, nested headings, page-offset conflicts and metadata cache upgrades.
+
+Audit completed preparations without loading OCR models or writing the cache:
+
+```sh
+npm run audit:pdf-navigation -- --root /path/to/library/.pageborne/ocr/ENGINE \
+  --output /private/path/navigation-report.json
+```
+
+Optional `--expect /private/path/expectations.json` checks known document
+regressions. Keys are PDF source SHA-256 values; each value may contain
+`chapters` (physical PDF page numbers), `entries` (`title`, `page`, optional
+`level`), and `noIssues: true` or an exact `issues` list. Keep source PDFs,
+expectations and reports with private library data, outside Git.

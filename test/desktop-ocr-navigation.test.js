@@ -32,3 +32,17 @@ test('missing or cancelled checkpoint metadata never commits incomplete navigati
   assert.equal(await attachCheckpointNavigation(artifact, async n => { current = false; return checkpoint(n); }, () => current), false);
   assert.equal(artifact.layout.navigation, undefined);
 });
+
+test('navigation upgrades keep existing PDF bookmarks and replace obsolete chapter metadata only', async () => {
+  const artifact = saved();
+  const outline = [{ title: 'Publisher bookmark', page: 2, level: 1 }];
+  artifact.layout.navigation = { version: 1, outline, labels: ['i', '1'],
+    sections: [{ title: 'Chapter 7 describes an example', page: 1, role: 'chapter' }] };
+  const before = structuredClone(artifact.layout.blocks);
+  assert.equal(await attachCheckpointNavigation(artifact, async number => checkpoint(number)), true);
+  assert.equal(artifact.layout.navigation.version, 2);
+  assert.deepEqual(artifact.layout.navigation.outline, outline);
+  assert.deepEqual(artifact.layout.navigation.labels, ['i', '1']);
+  assert.ok(!artifact.layout.navigation.sections.some(e => e.title.includes('describes')));
+  assert.deepEqual(artifact.layout.blocks, before);
+});

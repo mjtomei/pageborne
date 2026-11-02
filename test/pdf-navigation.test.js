@@ -31,7 +31,7 @@ test('scan furniture and continuation contents pages do not become sections or o
     { title: 'Section 2', role: 'section', page: 16 },
     { title: 'INDEX', role: 'heading', page: 40 },
   ]);
-  assert.deepEqual(result.map(e => [e.page, e.level]), [[7, 1], [9, 2], [16, 3], [40, 3]]);
+  assert.deepEqual(result.map(e => [e.page, e.level]), [[7, 1], [9, 2], [16, 3], [40, 1]]);
 });
 
 test('OCR chapter navigation survives full-page image fallback and phone preparation caching', () => {
