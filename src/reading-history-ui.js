@@ -49,7 +49,8 @@ export class ReadingHistoryUI {
       const time = at => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
       const start = time(entry.startedAt), end = time(entry.endedAt);
       const item = node('li'), heading = node('h3', entry.document.title), metadata = node('p', `${number(entry.words)} words · ${readingGroupLocation(entry)} · ${start === end ? start : `${start}–${end}`} · ${entry.platforms.join(', ')}`, 'muted');
-      item.append(heading, metadata, node('p', entry.excerpt, 'reading-excerpt'));
+      item.append(heading, metadata);
+      if (entry.count === 1) item.append(node('p', entry.excerpt, 'reading-excerpt'));
       const actions = node('div', null, 'reading-entry-actions');
       if (this.exists(entry)) {
         const read = node('button', 'Open document'); read.onclick = () => { this.dialog.close(); this.openDocument(entry); }; actions.append(read);
