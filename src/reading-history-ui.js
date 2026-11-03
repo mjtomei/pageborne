@@ -1,4 +1,5 @@
 import { readingDay } from './reading-activity.js';
+import { groupReadingEntries, readingGroupLocation } from './reading-history-groups.js';
 import { safeMarkdown } from './web-reading.js';
 import { marked } from 'marked';
 import './reading-history.css';
@@ -25,7 +26,7 @@ export class ReadingHistoryUI {
     this.body.replaceChildren();
     const entries = this.log()?.entries || [], totals = new Map();
     for (const e of entries) totals.set(e.day, (totals.get(e.day) || 0) + e.words);
-    const selected = entries.filter(e => e.day === this.day).sort((a, b) => b.at.localeCompare(a.at));
+    const selected = groupReadingEntries(entries.filter(e => e.day === this.day));
     this.body.append(node('p', `${number(totals.get(this.day) || 0)} words`, 'reading-total'));
     const label = node('label', 'Day '), date = node('input'); date.type = 'date'; date.value = this.day; date.max = readingDay(new Date());
     date.onchange = () => { if (/^\d{4}-\d{2}-\d{2}$/.test(date.value)) { this.day = date.value; this.limit = 50; this.render(); } }; label.append(date); this.body.append(label);
@@ -45,17 +46,23 @@ export class ReadingHistoryUI {
     if (!selected.length) this.body.append(node('p', 'No reading logged for this day yet. Read some text, then move on to the next page or document.', 'reading-empty'));
     const list = node('ol', null, 'reading-entries');
     for (const entry of selected.slice(0, this.limit)) {
-      const item = node('li'), heading = node('h3', entry.document.title), metadata = node('p', `${number(entry.words)} words · ${entry.page ? `page ${entry.page}` : `${Math.round(entry.position)}%`} · ${new Date(entry.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · ${entry.platform}`, 'muted');
+      const time = at => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const start = time(entry.startedAt), end = time(entry.endedAt);
+      const item = node('li'), heading = node('h3', entry.document.title), metadata = node('p', `${number(entry.words)} words · ${readingGroupLocation(entry)} · ${start === end ? start : `${start}–${end}`} · ${entry.platforms.join(', ')}`, 'muted');
       item.append(heading, metadata, node('p', entry.excerpt, 'reading-excerpt'));
       const actions = node('div', null, 'reading-entry-actions');
       if (this.exists(entry)) {
         const read = node('button', 'Open document'); read.onclick = () => { this.dialog.close(); this.openDocument(entry); }; actions.append(read);
       } else actions.append(node('span', 'Document no longer in this library', 'muted'));
-      for (const [i, session] of this.sessions(entry).entries()) {
-        const link = node('button', `${session.agent === 'claude' ? 'Claude' : 'Codex'} conversation${i > 1 ? ` ${i + 1}` : ''}`);
+      const sessions = this.sessions(entry);
+      const sessionNumbers = new Map();
+      for (const session of sessions) {
+        const index = (sessionNumbers.get(session.agent) || 0) + 1; sessionNumbers.set(session.agent, index);
+        const suffix = sessions.filter(s => s.agent === session.agent).length > 1 ? ` ${index}` : '';
+        const link = node('button', `${session.agent === 'claude' ? 'Claude' : 'Codex'} conversation${suffix}`);
         link.onclick = () => this.openConversation(entry, session); actions.append(link);
       }
-      if (!this.sessions(entry).length) actions.append(node('span', 'No linked conversation', 'muted'));
+      if (!sessions.length) actions.append(node('span', 'No linked conversation', 'muted'));
       item.append(actions); list.append(item);
     }
     this.body.append(list);

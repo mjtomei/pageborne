@@ -10,6 +10,39 @@ import { glassesReadingUnits } from '../src/reading-view.js';
 import { parseDocument } from '../src/document.js';
 import { nativeLayout, textWindow } from '../src/native-text.js';
 import { AtomicPhoneValue } from '../src/phone-storage.js';
+import { groupReadingEntries, readingGroupLocation } from '../src/reading-history-groups.js';
+
+function historyEntry(id, overrides = {}) {
+  return { id: String(id), day: '2026-11-02', at: `2026-11-02T12:0${id}:00.000Z`, endedAt: `2026-11-02T12:0${id}:30.000Z`,
+    document: { id: 'book.pdf', key: 'book-key', title: 'Book' }, scope: 'library-one',
+    words: 100, seconds: 30, page: id + 1, position: id * 10, excerpt: `Passage ${id}`, platform: 'glasses', sessions: [], ...overrides };
+}
+test('adjacent readings become one display entry with totals, ranges and all conversation links', () => {
+  const claude = { agent: 'claude', id: 'chat-one' }, codex = { agent: 'codex', id: 'chat-two' };
+  const entries = [historyEntry(2, { platform: 'web', sessions: [claude] }), historyEntry(0, { sessions: [codex] }), historyEntry(1, { sessions: [claude] })];
+  const before = structuredClone(entries), [group] = groupReadingEntries(entries);
+  assert.equal(group.count, 3); assert.equal(group.words, 300); assert.equal(group.seconds, 90);
+  assert.equal(group.startedAt, entries[1].at); assert.equal(group.endedAt, entries[0].endedAt);
+  assert.equal(readingGroupLocation(group), 'pages 1–3'); assert.equal(group.excerpt, 'Passage 2');
+  assert.deepEqual(group.platforms, ['web', 'glasses']); assert.deepEqual(group.sessions, [claude, codex]);
+  assert.deepEqual(entries, before, 'grouping never alters stored events or input ordering');
+});
+test('a different document, library or day separates reading groups', () => {
+  const other = { id: 'other.pdf', key: 'other-key', title: 'Book' };
+  const entries = [historyEntry(0), historyEntry(1, { document: other }), historyEntry(2),
+    historyEntry(3, { scope: 'library-two' }), historyEntry(4, { day: '2026-11-03' })];
+  const groups = groupReadingEntries(entries);
+  assert.equal(groups.length, 5, 'same title or a return to an earlier document is not one consecutive run');
+  assert.equal(groups.reduce((sum, group) => sum + group.words, 0), 500);
+});
+test('text position ranges preserve rereading and group whole runs before pagination', () => {
+  const entries = Array.from({ length: 60 }, (_, i) => historyEntry(0, { id: String(i), page: undefined, position: i % 3 * 10, words: 1.5 }));
+  const groups = groupReadingEntries(entries);
+  assert.equal(groups.length, 1); assert.equal(groups[0].words, 90); assert.equal(groups[0].count, 60);
+  assert.equal(readingGroupLocation(groups[0]), '0–20%');
+  assert.equal(readingGroupLocation(groupReadingEntries([historyEntry(0, { page: undefined, position: 12.2 })])[0]), '12%');
+  assert.equal(readingGroupLocation(groupReadingEntries([historyEntry(0)])[0]), 'page 1');
+});
 
 function fixture(start = new Date(2026, 10, 2, 12).getTime()) {
   let time = 0, id = 0; const events = [];

@@ -30,7 +30,7 @@ try {
     const vite = await createServer({ mode, cacheDir: `.state/vite-reading-${mode}`, clearScreen: false,
       plugins: [{ name: 'reading-test', transform(code, id) {
         if (id.endsWith('/src/speech-setup.js')) return code.replace('start(initialize) {', 'start(initialize) { this.blocked = false; return Promise.resolve();');
-        if (id.endsWith('/src/main.js')) return code + '\nwindow.__reading = { get entries() { return readingLog?.entries || []; }, get units() { return [...readingTracker.units.values()].map(({key,words,text}) => ({key,words,text})); }, sync: syncReading, remove: deleteDocument, next: () => { reader.pageStep(1); }, get position() { return reader.y; } };';
+        if (id.endsWith('/src/main.js')) return code + '\nwindow.__reading = { get entries() { return readingLog?.entries || []; }, get units() { return [...readingTracker.units.values()].map(({key,words,text}) => ({key,words,text})); }, add: entries => readingLog.add(entries), sync: syncReading, remove: deleteDocument, next: () => { reader.pageStep(1); }, get position() { return reader.y; } };';
       }, configureServer(server) { server.middlewares.use('/web/config', (req, res) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ mode: 'terminal', endpoint: `http://${req.headers.host}`, token: 'fixture', agent: 'claude' })); }); } }],
       server: { host: '127.0.0.1', port: 5173, strictPort: true, hmr: false, watch: null, proxy: { '/api': `http://127.0.0.1:${backend.address().port}` } } });
     await vite.listen();
@@ -85,6 +85,32 @@ try {
       await page.locator('#reading-history-open').click();
       await expect(page.locator('.reading-total')).not.toHaveText('0 words');
       await expect(page.locator('.reading-entries')).toContainText('Reading record');
+      // More than one list page of consecutive readings must collapse before
+      // pagination, while a different document separates two runs of this one.
+      const groupedDay = mode === 'web' ? '2000-01-03' : '2000-01-02';
+      await page.evaluate(async ({ day, mode }) => {
+        const source = window.__reading.entries.find(e => e.document.id === 'paper.md');
+        const entry = (id, hour, second, extra = {}) => ({ ...source, id: `grouped-${mode}-${id}`, day,
+          at: `${day}T${hour}:00:${String(second).padStart(2, '0')}.000Z`, endedAt: `${day}T${hour}:01:00.000Z`, words: 1, seconds: 1, ...extra });
+        await window.__reading.add([
+          entry('earliest', '10', 0, { words: 3 }),
+          entry('other', '11', 0, { words: 2, document: { id: 'other.md', key: 'other', title: 'Another document' } }),
+          ...Array.from({ length: 55 }, (_, i) => entry(i, '12', i, { page: i + 1,
+            sessions: i === 0 ? [{ agent: 'codex', id: 'older-linked-chat' }] : source.sessions })),
+        ]);
+      }, { day: groupedDay, mode });
+      await page.locator('#reading-history input[type=date]').fill(groupedDay);
+      await page.locator('#reading-history input[type=date]').dispatchEvent('change');
+      await expect(page.locator('.reading-entries > li')).toHaveCount(3);
+      await expect(page.locator('.reading-total')).toHaveText('60 words');
+      const grouped = page.locator('.reading-entries > li').first();
+      await expect(grouped).toContainText('55 words · pages 1–55');
+      await expect(grouped.getByRole('button', { name: 'Claude conversation', exact: true })).toHaveCount(1);
+      await grouped.getByRole('button', { name: 'Codex conversation', exact: true }).click();
+      await expect(page.locator('.reading-conversation')).toContainText('still available after deleting');
+      await page.getByRole('button', { name: '← Reading history', exact: true }).click();
+      await expect(page.locator('.reading-entries > li')).toHaveCount(3);
+      await page.screenshot({ path: `test-results/reading-activity/${mode}-grouped.png` });
       if (mode === 'web') {
         await page.setViewportSize({ width: 834, height: 1194 });
         await page.screenshot({ path: 'test-results/reading-activity/ipad-history.png' });
