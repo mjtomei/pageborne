@@ -323,6 +323,7 @@ input[type=checkbox][role=switch]:disabled{opacity:.42}
 .library-sync-cancel{align-self:flex-start}
 #library-help-content{display:grid;gap:12px}
 .library-actions{display:flex;gap:8px}
+.library-shortcuts{display:grid;grid-template-columns:auto auto;gap:8px}
 .library-actions .search-box{flex:1;min-width:0}
 .import-button{flex:none;display:flex;align-items:center;gap:6px;padding:0 14px}
 .imports{border:1px solid var(--line);border-radius:12px;background:var(--surface)}

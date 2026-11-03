@@ -31,8 +31,10 @@
           <label class="search-box"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg><input id="filter" type="search" placeholder="Find a document" aria-label="Find a document"></label>
           <button id="import" class="primary import-button" disabled><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>Add files</button><input id="file-picker" type="file" accept=".md,.markdown,.txt,.pdf,text/plain,text/markdown,application/pdf" multiple hidden>
         </div>
-        <button id="library-librarian" class="text-button" type="button" disabled>Librarian</button>
-        <button id="reading-history-open" class="text-button" type="button" disabled>Reading history</button>
+        <div class="library-shortcuts">
+          <button id="library-librarian" class="text-button" type="button" disabled>Librarian</button>
+          <button id="reading-history-open" class="text-button" type="button" disabled>Reading history</button>
+        </div>
         <button id="library-sync-cancel" class="text-button library-sync-cancel" hidden>Cancel sync</button>
         <div id="library-help-content">
           <p class="muted">Add Markdown, plain text or PDF files from your phone. Your library is saved on this device. Tap a document to read it on your glasses, then use the glasses or the controls in the app to navigate.</p>
