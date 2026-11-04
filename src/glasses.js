@@ -349,17 +349,21 @@ export class GlassesDisplay {
     this.onStatus = onStatus; this.onAction = onAction; this.onAudio = onAudio; this.diagnostics = diagnostics;
     this.lane = new BridgeLane(diagnostics);
     this.ready = false; this.suspended = false; this.created = false; this.lastFrame = null; this.sent = {}; this.surface = 'text'; this.askMenu = false; this.contentsMenu = false;
+    this.recoveryAttempts = 0;
     window.addEventListener('flutterInAppWebViewPlatformReady', () => this.connect());
   }
-  async connect() {
+  async connect(automatic = false) {
     if (this.connecting) return this.connecting;
+    if (!automatic) this.recoveryAttempts = 0;
     if (!window.flutter_inappwebview?.callHandler) { this.onStatus('Phone preview · Open in the Even app for glasses'); return; }
     // Cached PDFs read their layout while startup connects. Storage calls use
     // this same lane; setup can safely queue behind them. Only an outstanding
     // display operation should block a manual reconnect.
     if (this.lane.busy && !this.diagnostics.active?.name.startsWith('storage-')) {
+      this.recover();
       this.onStatus('Display call still pending. Close and reopen the reader to reconnect.'); return;
     }
+    this.recovery = null;
     this.connecting = this.setup().catch(error => this.fail(error)).finally(() => { this.connecting = null; });
     return this.connecting;
   }
@@ -382,7 +386,9 @@ export class GlassesDisplay {
     });
     this.unsubscribe?.();
     this.unsubscribe = this.bridge.onEvenHubEvent(event => this.handleEvent(event));
-    this.queue = new LatestFrameQueue(frame => this.lane.run(frame.bitmap && !frame.picker && !frame.positionPicker ? 'image-frame' : 'text-frame', () => this.send(frame)), error => this.fail(error));
+    // Serialize frames, but give each native call its own timeout. A complete
+    // four-tile image can take longer than eight seconds while making progress.
+    this.queue = new LatestFrameQueue(frame => this.send(frame), error => this.fail(error));
     this.sent = {}; this.surface = 'text'; this.askMenu = content.askMenu; this.contentsMenu = content.contentsMenu; this.displayMode = mode; this.acceptedFrame = null; this.readingFrame = null; this.suspended = false; this.ready = true;
     this.onStatus('Native text connected'); this.diagnostics.log('ready');
     if (this.lastFrame) this.submit(this.lastFrame);
@@ -392,13 +398,16 @@ export class GlassesDisplay {
     const action = actionForEvent(event);
     if (!action) return;
     this.diagnostics.log('gesture', { action, source });
-    if (action === 'exit') { this.ready = false; this.created = false; this.queue.stop(); this.onStatus('Glasses app closed'); }
+    if (action === 'exit') { this.recovery = null; this.ready = false; this.created = false; this.queue.stop(); this.onStatus('Glasses app closed'); }
     if (action === 'suspend') { this.suspended = true; this.queue.pending = null; }
-    if (action === 'resume') { this.suspended = false; if (this.lastFrame) this.submit(this.lastFrame); }
+    if (action === 'resume') { this.suspended = false; if (!this.ready) this.recover(); else if (this.lastFrame) this.submit(this.lastFrame); }
     this.onAction(action, source);
   }
   close() {
-    if (!this.ready || this.closing) return;
+    // A close request also cancels recovery while a timed-out call is pending.
+    this.recovery = null;
+    if (!this.ready) { this.suspended = true; return; }
+    if (this.closing) return;
     this.suspended = true; this.queue.pending = null; this.onAction('close');
     this.closing = this.lane.run('exit', async () => {
       if (!await this.bridge.shutDownPageContainer(1)) throw new Error('Exit request failed.');
@@ -406,8 +415,34 @@ export class GlassesDisplay {
   }
   fail(error) {
     this.ready = false; this.queue?.stop();
+    this.failure = error;
+    this.diagnostics.error?.('display-error', error, { operation: error.operation, ...error.context, surface: this.surface });
     this.diagnostics.log('display-paused', { message: String(error.message).slice(0, 300) });
     this.onStatus(`Display paused: ${error.message}`); this.onAction('suspend');
+    this.recover();
+  }
+  recover() {
+    if (this.failure?.code !== 'bridge-timeout' || this.recovery || !this.created || this.recoveryAttempts >= 2) return;
+    const ticket = this.recovery = {};
+    // A timeout does not cancel the native operation. Rebuild only after it
+    // settles, never overlap BLE calls, and resume at the latest requested view.
+    this.lane.tail.catch(() => {}).then(async () => {
+      if (this.recovery !== ticket) return;
+      this.recovery = null;
+      if (this.suspended || !this.created || this.ready) return;
+      this.diagnostics.log('display-recovery', { attempt: ++this.recoveryAttempts });
+      await this.connect(true);
+    });
+  }
+  interrupted(frame) {
+    if (this.suspended || !this.ready) return true;
+    const next = this.queue?.pending;
+    // Abandon obsolete tiles between calls, but let footer-only updates wait
+    // for the image to finish instead of continually restarting its transfer.
+    return !!next && (next.layout !== frame.layout || next.y !== frame.y || next.mode !== frame.mode
+      || next.selection !== frame.selection || next.bitmap !== frame.bitmap || next.wordFrame?.start !== frame.wordFrame?.start
+      || next.message?.body !== frame.message?.body || next.dialog !== frame.dialog
+      || !!next.picker !== !!frame.picker || !!next.positionPicker !== !!frame.positionPicker || !!next.modePicker !== !!frame.modePicker);
   }
   submit(frame) {
     this.lastFrame = frame;
@@ -420,7 +455,7 @@ export class GlassesDisplay {
     const askMenu = frame.askMenu ?? frame.message?.kind === 'ask';
     const contentsMenu = documentContents(frame.layout).length > 0;
     const content = { body: pdf ? '' : bodyText(frame), alignments: frame.message?.alignments, status: statusText(frame), footer: footerTextObjects(frame), askMenu, contentsMenu };
-    if (this.suspended || !this.ready) return;
+    if (this.interrupted(frame)) return;
     const dialog = frameDialog(frame);
     const reading = !!frame.layout && !dialog && !frame.message && !frame.picker && !frame.positionPicker && !frame.modePicker && !frame.footnotes;
     if (!reading) this.readingFrame = null;
@@ -443,7 +478,7 @@ export class GlassesDisplay {
     // Content changes use native text updates. Line count or controls changes
     // rebuild geometry, including the clipped PDF tiles underneath.
     if (rebuild) {
-      if (!await this.bridge.rebuildPageContainer(overlayPage || (pdf ? pdfPageDefinition(BODY_HEIGHT, content) : pageDefinition(frame.mode, content)))) throw new Error('Could not switch the display format.');
+      if (!await this.lane.run('display-rebuild', () => this.bridge.rebuildPageContainer(overlayPage || (pdf ? pdfPageDefinition(BODY_HEIGHT, content) : pageDefinition(frame.mode, content))), { context: { surface } })) throw new Error('Could not switch the display format.');
       this.surface = surface; this.askMenu = askMenu; this.contentsMenu = contentsMenu; this.reviewTop = reviewTop; this.reviewControls = reviewControls; this.sent = pdf ? {} : Object.fromEntries(updates.map(box => [box.containerName, box.content]));
       this.sentColors = Object.fromEntries(updates.map(box => [box.containerName, box.textColor ?? 4])); this.imageFrame = null; this.imageTiles = new Map();
       this.onStatus(pdf ? 'Images connected' : 'Native text connected');
@@ -452,7 +487,7 @@ export class GlassesDisplay {
       || this.imageFrame?.wordFrame?.start !== frame.wordFrame?.start)) {
       const ctx = frame.bitmap.getContext('2d');
       for (const tile of pdfTiles(reviewTop ?? BODY_HEIGHT)) {
-        if (this.suspended || !this.ready) return;
+        if (this.interrupted(frame)) return;
         const pixels = ctx.getImageData(tile.x, tile.y, tile.width, tile.height).data;
         if (frame.modePicker) {
           // Text containers do not expose an opaque background. Blank only the
@@ -467,24 +502,28 @@ export class GlassesDisplay {
         const imageData = gray4(pixels);
         const previous = this.imageTiles?.get(tile.id);
         if (previous?.length === imageData.length && imageData.every((value, index) => value === previous[index])) continue;
-        const result = await this.bridge.updateImageRawData({ containerID: tile.id, containerName: tile.name, imageData: Array.from(imageData) });
+        const result = await this.lane.run('image-tile', () => this.bridge.updateImageRawData({ containerID: tile.id, containerName: tile.name, imageData: Array.from(imageData) }),
+          { context: { container: tile.name, tile: tile.id - 9, bytes: imageData.length } });
         if (!ImageRawDataUpdateResult.isSuccess(result)) throw new Error(`PDF image update failed (${result}).`);
         (this.imageTiles ||= new Map()).set(tile.id, imageData);
       }
       this.imageFrame = frame;
     }
+    if (this.interrupted(frame)) return;
     if (reading && pdf) this.acceptReading(frame);
     for (const box of updates) {
       const { containerName: name, containerID: id, content: value, textColor } = box;
-      if (this.suspended || !this.ready) return;
+      if (this.interrupted(frame)) return;
       if (value !== this.sent[name] || (textColor ?? 4) !== (this.sentColors?.[name] ?? 4)) {
-        const ok = await this.bridge.textContainerUpgrade({ containerID: id, containerName: name,
-          content: value, ...(textColor == null ? {} : { textColor }) });
+        const ok = await this.lane.run('text-frame', () => this.bridge.textContainerUpgrade({ containerID: id, containerName: name,
+          content: value, ...(textColor == null ? {} : { textColor }) }), { context: { container: name } });
         if (!ok) throw new Error(`Text update failed (${name}).`);
         this.sent[name] = value; (this.sentColors ||= {})[name] = textColor ?? 4;
       }
       if (reading && name === 'body') this.acceptReading(frame);
     }
+    if (this.interrupted(frame)) return;
+    this.failure = null; this.recoveryAttempts = 0;
     this.acceptedFrame = frame;
     if (this.diagnostics.enabled) this.diagnostics.display.accepted = true;
     this.acceptedAt = performance.now();

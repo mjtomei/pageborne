@@ -1,5 +1,6 @@
 import packageInfo from '../package.json' with { type: 'json' };
 import { restoreSetupHistory, resolveSetupHistory } from './diagnostic-setup-history.js';
+import { safeTimeout as setTimeout, cancelTimeout as clearTimeout } from './timers.js';
 export const VERSION = packageInfo.version;
 const key = 'even-reader:diagnostics:v1';
 const limited = (value, size) => String(value ?? '').slice(0, size);
@@ -106,21 +107,22 @@ export class Diagnostics {
 // SDK call settles. Reconnect/exit therefore cannot overlap a pending update.
 export class BridgeLane {
   constructor(diagnostics, timeoutMs = 8000) { this.diagnostics = diagnostics; this.timeoutMs = timeoutMs; this.tail = Promise.resolve(); this.busy = false; }
-  run(name, operation, { quiet = false } = {}) {
+  run(name, operation, { quiet = false, context = {} } = {}) {
     let timer; let rejectTimeout;
     const timeout = new Promise((_, reject) => { rejectTimeout = reject; });
     const original = this.tail.catch(() => {}).then(async () => {
       this.busy = true; const started = performance.now();
-      this.diagnostics.active = { name, at: new Date().toISOString() };
-      if (!quiet) this.diagnostics.log('bridge-start', { name });
+      this.diagnostics.active = { name, ...context, at: new Date().toISOString() };
+      if (!quiet) this.diagnostics.log('bridge-start', { name, ...context });
       timer = setTimeout(() => {
-        this.diagnostics.log('bridge-timeout', { name });
-        rejectTimeout(new Error(`${name} timed out. Close and reopen the reader if it stays pending.`));
+        this.diagnostics.log('bridge-timeout', { name, ...context });
+        rejectTimeout(Object.assign(new Error(`${name} timed out. Close and reopen the reader if it stays pending.`),
+          { code: 'bridge-timeout', operation: name, context }));
       }, this.timeoutMs);
       try {
         const result = await operation();
         this.diagnostics.active = null;
-        if (!quiet) this.diagnostics.log('bridge-ok', { name, ms: Math.round(performance.now() - started) });
+        if (!quiet) this.diagnostics.log('bridge-ok', { name, ...context, ms: Math.round(performance.now() - started) });
         return result;
       } catch (error) {
         this.diagnostics.active = null;

@@ -1,6 +1,6 @@
 {
   "name": "even-reader",
-  "version": "0.8.145",
+  "version": "0.8.146",
   "private": true,
   "type": "module",
   "description": "Markdown and PDF reading on Even G2 glasses, phones and tablets",
@@ -100,7 +100,8 @@
     "test:contents": "node scripts/contents-browser-test.mjs",
     "audit:pdf-navigation": "node scripts/pdf-navigation-audit.mjs",
     "audit:pdf-reflow": "node scripts/pdf-reflow-audit.mjs",
-    "test:reading-history": "node scripts/reading-activity-browser-test.mjs"
+    "test:reading-history": "node scripts/reading-activity-browser-test.mjs",
+    "test:display-recovery": "node scripts/display-recovery-browser-test.mjs"
   },
   "dependencies": {
     "@evenrealities/even_hub_sdk": "0.0.14",

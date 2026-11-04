@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { createServer } from 'vite';
 import { mkdir, writeFile } from 'node:fs/promises';
 
-const vite = await createServer({ optimizeDeps: { noDiscovery: true }, server: { host: '127.0.0.1', port: 0, watch: { usePolling: true } }, clearScreen: false }); await vite.listen();
-const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
+const vite = await createServer({ mode: 'release', optimizeDeps: { noDiscovery: true }, server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, clearScreen: false }); await vite.listen();
+const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true });
 const results = {};
 try {
   const page = await browser.newPage();
@@ -61,6 +61,23 @@ try {
     return { pendingFinished, recurring: ticks >= 5 };
   });
   assert.deepEqual(results.cancelExpired, { pendingFinished: true, recurring: true });
+  results.bridgeDeadline = await page.evaluate(async () => {
+    const { BridgeLane } = await import('/src/diagnostics.js');
+    const { safeTimeout } = await import('/src/timers.js');
+    const events = [], lane = new BridgeLane({ log: (type, data) => events.push({ type, ...data }) }, 40);
+    let release, unrelatedFinished = false;
+    const result = lane.run('image-tile', () => new Promise(resolve => { release = resolve; }), { context: { tile: 4 } }).catch(error => error);
+    await Promise.resolve(); await Promise.resolve();
+    window.__tickShadowTimers(50);
+    const error = await result, retained = lane.busy;
+    safeTimeout(() => { unrelatedFinished = true; }, 150);
+    await window.nativeDelay(80); release(true); await lane.tail;
+    await window.nativeDelay(200);
+    await lane.run('text-frame', async () => true);
+    return { retained, unrelatedFinished, code: error.code, tile: error.context.tile,
+      timeouts: events.filter(e => e.type === 'bridge-timeout').length, busy: lane.busy };
+  });
+  assert.deepEqual(results.bridgeDeadline, { retained: true, unrelatedFinished: true, code: 'bridge-timeout', tile: 4, timeouts: 1, busy: false });
 } finally {
   await mkdir('test-results/sdk-timers', { recursive: true });
   await writeFile('test-results/sdk-timers/results.json', JSON.stringify(results, null, 2));

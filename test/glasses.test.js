@@ -10,6 +10,7 @@ import { TRANSCRIPTION_HINT } from '../src/controls.js';
 import { AskSession } from '../src/ask.js';
 import { ASK_STATUS_SYMBOLS } from '../src/ask-status.js';
 import { getAdvW } from '@evenrealities/pretext';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 
 test('reading acknowledgement precedes footer completion and survives footer-only changes', async () => {
   const previous = globalThis.window; globalThis.window = { addEventListener() {} };
@@ -22,27 +23,31 @@ test('reading acknowledgement precedes footer completion and survives footer-onl
     const layout = nativeLayout(parseDocument('one two three four five six'));
     const frame = { layout, mode: 'speed', playing: true, y: 0, wordRate: 1000, wordFrame: { start: 0, end: 3, content: 'one two three' } };
     const sending = display.send(frame);
+    await nextTurn();
     assert.equal(pending[0].box.containerName, 'body'); assert.equal(display.readingFrame, undefined);
-    pending.shift().resolve(true); await Promise.resolve();
+    pending.shift().resolve(true); await nextTurn();
     assert.equal(display.readingFrame, frame); assert.equal(display.acceptedFrame, undefined);
     assert.equal(pending[0].box.containerName, 'status');
     const acceptedAt = display.readingAcceptedAt;
-    pending.shift().resolve(true); await Promise.resolve();
+    pending.shift().resolve(true); await nextTurn();
     assert.equal(pending[0].box.containerName, 'commands');
     pending.shift().resolve(true); await sending;
     assert.equal(display.acceptedFrame, frame);
     const footer = { ...frame, askStatus: 'Unread reply' }, updating = display.send(footer);
+    await nextTurn();
     assert.equal(pending[0].box.containerName, 'status');
     assert.equal(display.readingAcceptedAt, acceptedAt); assert.equal(acknowledgements.length, 1);
-    pending.shift().resolve(true); await Promise.resolve();
+    pending.shift().resolve(true); await nextTurn();
     if (pending.length) { assert.equal(pending[0].box.containerName, 'commands'); pending.shift().resolve(true); }
     await updating;
     assert.equal(display.readingAcceptedAt, acceptedAt);
     const next = display.send({ ...footer, wordFrame: { start: 3, end: 6, content: 'four five six' } });
+    await nextTurn();
     assert.equal(display.readingFrame, footer, 'new words must wait for their own acknowledgement');
     pending.shift().resolve(true); await next;
     assert.equal(acknowledgements.length, 2);
     const failing = display.send({ ...footer, wordFrame: { start: 6, end: 9, content: 'unaccepted words' } });
+    await nextTurn();
     pending.shift().resolve(false); await assert.rejects(failing, /Text update failed/);
     assert.equal(display.readingFrame.wordFrame.start, 3, 'a rejected body cannot start a new dwell');
   } finally { globalThis.window = previous; }
