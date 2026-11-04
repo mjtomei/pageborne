@@ -6,7 +6,8 @@ permissions:
   contents: read
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Keep the runner compatible with the pinned Playwright browser build.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,6 +32,7 @@ jobs:
           node scripts/desktop-ocr-browser-test.mjs
           PAGE_TIME_BROWSER=chromium npm run test:page-time
           npm run test:reading-history
+          READING_BROWSER=chromium npm run test:reading-controls
           WEB_BROWSER=chromium npm run test:web
           WEB_BROWSER=chromium WEB_BUILT=1 npm run test:web
           npm run test:pdf-centering

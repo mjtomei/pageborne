@@ -2,9 +2,11 @@
 // reading progress keep their existing state. CSS also works in iPhone/WebViews
 // that cannot put arbitrary elements into browser fullscreen.
 export class FullscreenReader {
-  constructor(root, button, { cancel = () => {} } = {}) {
-    Object.assign(this, { root, button, cancel });
+  constructor(root, button, { cancel = () => {}, landscape = () => false } = {}) {
+    Object.assign(this, { root, button, cancel, landscape });
     this.active = false;
+    this.portrait = matchMedia('(orientation: portrait)');
+    this.portrait.addEventListener('change', () => { if (this.active) { this.cancel(); this.fit(); } });
     button.onclick = () => this.active ? this.exit() : this.enter();
     document.addEventListener('fullscreenchange', () => {
       if (this.native && !document.fullscreenElement) this.exit();
@@ -30,6 +32,11 @@ export class FullscreenReader {
     const stage = this.root.querySelector('.preview-stage');
     this.root.style.setProperty('--screen-width', `${Math.max(0, Math.min(stage.clientWidth, stage.clientHeight * 2))}px`);
   }
+  coordinates(event) {
+    // Invert the clockwise CSS rotation so swipes follow the visible text.
+    return this.active && this.root.classList.contains('reader-landscape') && this.portrait.matches
+      ? [event.clientY, -event.clientX] : [event.clientX, event.clientY];
+  }
   enter() {
     if (this.active) return;
     this.cancel(); this.active = true;
@@ -40,11 +47,12 @@ export class FullscreenReader {
     this.inert = [...document.body.children].filter(el => el !== this.root).map(el => [el, el.inert]);
     for (const [el] of this.inert) el.inert = true;
     this.root.classList.add('reader-fullscreen');
+    this.root.classList.toggle('reader-landscape', this.landscape());
     document.body.classList.add('reader-expanded');
     this.button.setAttribute('aria-pressed', 'true');
     this.button.setAttribute('aria-label', 'Exit full screen');
     this.button.textContent = '✕'; this.fit(); this.button.focus({ preventScroll: true });
-    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+    if (!this.root.classList.contains('reader-landscape') && !document.fullscreenElement && document.documentElement.requestFullscreen) {
       Promise.resolve(document.documentElement.requestFullscreen()).then(() => {
         this.native = document.fullscreenElement === document.documentElement;
         if (!this.active && this.native) void document.exitFullscreen().catch(() => {});
@@ -54,7 +62,7 @@ export class FullscreenReader {
   exit() {
     if (!this.active) return;
     this.cancel(); this.active = false;
-    this.root.classList.remove('reader-fullscreen');
+    this.root.classList.remove('reader-fullscreen', 'reader-landscape');
     document.body.classList.remove('reader-expanded');
     this.root.style.removeProperty('--screen-width');
     this.placeholder.replaceWith(this.root);

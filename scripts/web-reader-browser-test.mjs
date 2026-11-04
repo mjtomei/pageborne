@@ -72,6 +72,7 @@ try {
     await page.evaluate(() => { window.__nativeFullscreen = document.documentElement.requestFullscreen; document.documentElement.requestFullscreen = () => Promise.reject(new Error('Not supported')); });
     await page.locator('#preview-fullscreen').click();
     await expect(page.locator('.reader-fullscreen')).toBeVisible();
+    await expect(page.locator('.reader-landscape')).toHaveCount(0);
     await expect(page.locator('#preview-fullscreen')).toHaveAttribute('aria-label', 'Exit full screen');
     const checkFit = async () => {
       await expect.poll(async () => {

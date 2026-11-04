@@ -669,4 +669,9 @@ body.reader-expanded{overflow:hidden}
 .reader-fullscreen #preview{width:var(--screen-width,100%);max-width:100%;height:auto;flex:none;border-radius:0}
 .reader-fullscreen #glasses-hints,.reader-fullscreen #hints-toggle,.reader-fullscreen #reconnect{display:none}
 .reader-fullscreen #preview-fullscreen{order:5}
+/* Even's portrait WebView gets a landscape surface without changing the
+   glasses frame. Map safe areas into the rotated panel's local axes. */
+@media(orientation:portrait){
+  .reader-fullscreen.reader-landscape{inset:0 auto auto 100%;width:100dvh;height:100dvw;transform-origin:top left;transform:rotate(90deg);padding:max(4px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left)) max(8px,env(safe-area-inset-top))}
+}
 @media(max-width:370px){.preview-label{gap:2px}.preview-actions{gap:0}#preview-speak{max-width:100px;padding-inline:4px}}

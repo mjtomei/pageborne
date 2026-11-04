@@ -45,7 +45,8 @@ export class PreviewGestures {
   }
 }
 
-export function installPreviewInput(element, { dispatch, keyboardAllowed = () => true, canUse = () => true } = {}) {
+export function installPreviewInput(element, { dispatch, keyboardAllowed = () => true, canUse = () => true,
+  coordinates = event => [event.clientX, event.clientY] } = {}) {
   const gesture = name => { const action = actionForGesture(name); if (action) dispatch(action, 'preview'); };
   const recognizer = new PreviewGestures(gesture); const pointers = new Set(); const heldKeys = new Map();
   let primary; const controller = new AbortController();
@@ -62,14 +63,14 @@ export function installPreviewInput(element, { dispatch, keyboardAllowed = () =>
     pointers.add(event.pointerId);
     if (pointers.size !== 1 || event.isPrimary === false) { cancel(true); return; }
     event.preventDefault(); element.focus({ preventScroll: true }); primary = event.pointerId;
-    element.setPointerCapture?.(event.pointerId); recognizer.down(event.clientX, event.clientY);
+    element.setPointerCapture?.(event.pointerId); recognizer.down(...coordinates(event));
   });
-  on(element, 'pointermove', event => { if (event.pointerId === primary) recognizer.move(event.clientX, event.clientY); });
+  on(element, 'pointermove', event => { if (event.pointerId === primary) recognizer.move(...coordinates(event)); });
   on(element, 'pointerup', event => {
     pointers.delete(event.pointerId);
     if (event.pointerId !== primary) return;
     primary = undefined;
-    if (usable()) recognizer.up(event.clientX, event.clientY); else recognizer.cancel();
+    if (usable()) recognizer.up(...coordinates(event)); else recognizer.cancel();
   });
   on(element, 'pointercancel', event => { pointers.delete(event.pointerId); cancel(); });
   on(element, 'lostpointercapture', event => { pointers.delete(event.pointerId); if (event.pointerId === primary) cancel(); });

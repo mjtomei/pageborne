@@ -1541,6 +1541,7 @@ $('keyboard-note').textContent = keyboardHelp();
 $('preview-menu-toggle').onclick = () => dispatchAction('menu', 'preview');
 previewInput = installPreviewInput($('preview'), {
   dispatch: dispatchAction,
+  coordinates: event => fullscreenReader?.coordinates(event) || [event.clientX, event.clientY],
   canUse: () => !document.hidden && !document.querySelector('dialog[open]'),
   keyboardAllowed: event => {
     if (event.defaultPrevented || document.querySelector('dialog[open]')) return false;
@@ -1548,7 +1549,9 @@ previewInput = installPreviewInput($('preview'), {
     return !$('figure-dialog').open && !$('annotation-dialog').open && !event.target.closest?.('input, textarea, select, button, [contenteditable], #passage, #pdf-passage, #pdf-gallery, #pdf-annotations, #ask-history, #ask-passage') && !!(active || picker || positionPicker || modePicker || previewMenu);
   },
 });
-fullscreenReader = new FullscreenReader(document.querySelector('.preview-wrap'), $('preview-fullscreen'), { cancel: () => previewInput.cancel() });
+fullscreenReader = new FullscreenReader(document.querySelector('.preview-wrap'), $('preview-fullscreen'), {
+  cancel: () => previewInput.cancel(), landscape: () => !!window.flutter_inappwebview?.callHandler,
+});
 installHoldButton($('preview-speak'), { start: () => askUI.hold('phone'), release: () => askUI.release(), cancel: () => askUI.cancelDictation() });
 document.querySelector('.brand').onclick = event => { event.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); };
 function flushPosition() { rememberPosition(); phonePreferences?.flush(); }

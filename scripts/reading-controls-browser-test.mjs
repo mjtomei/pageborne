@@ -5,9 +5,10 @@ import { createServer } from 'vite';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { showLibrary, hideSettings, backToReading } from './ui-helpers.mjs';
 import { pdfFixture } from '../test/fixtures/pdfs.mjs';
+import { displayProbe } from './display-probe.mjs';
 
 const out = 'test-results/reading-controls'; await mkdir(out, { recursive: true });
-const vite = await createServer({ mode: 'release', plugins: [{ name: 'controls-speech-fixture', transform(code, id) {
+const vite = await createServer({ mode: 'release', plugins: [displayProbe(), { name: 'controls-speech-fixture', transform(code, id) {
   if (id.endsWith('/src/speech-setup.js')) return code.replace('start(initialize) {', 'start(initialize) { this.blocked = false; return Promise.resolve();');
 } }], cacheDir: '.state/vite-reading-controls', server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, clearScreen: false });
 await vite.listen(); const results = [];
@@ -68,6 +69,66 @@ try {
       await event(0); await expect(page.locator('#title')).toHaveText('Controls');
       await expect.poll(position).toBe(pagePlace); await hideSettings(page);
       result.pagesBackPreserved = true;
+
+      // Even may keep its WebView portrait. Rotate only the fullscreen surface,
+      // and exercise physical touch coordinates rather than dispatching actions.
+      await page.evaluate(() => { document.documentElement.requestFullscreen = () => { window.__nativeFullscreenRequested = true; return Promise.resolve(); }; });
+      await page.locator('#preview-fullscreen').click();
+      const fitLandscape = async rotated => {
+        await expect.poll(async () => {
+          const canvas = await page.locator('#preview').boundingBox(), view = page.viewportSize();
+          const controls = await Promise.all(['#preview-fullscreen', '#preview-menu-toggle', '#preview-speak'].map(s => page.locator(s).boundingBox()));
+          return [canvas, ...controls].every(b => b && b.x >= -1 && b.y >= -1 && b.x+b.width <= view.width+1 && b.y+b.height <= view.height+1)
+            && Math.abs(canvas.width / canvas.height - (rotated ? .5 : 2)) < .01;
+        }).toBe(true);
+      };
+      for (const viewport of [{width:393,height:852},{width:834,height:1194},{width:852,height:393},{width:440,height:806}]) {
+        await page.setViewportSize(viewport); await fitLandscape(viewport.width < viewport.height);
+        assert.equal(await position(), pagePlace);
+      }
+      assert.equal(await page.evaluate(() => window.__nativeFullscreenRequested), undefined);
+      const touch = engine === chromium ? await page.context().newCDPSession(page) : null;
+      const swipeScreen = async (dx, dy) => {
+        const b = await page.locator('#preview').boundingBox(), x = b.x+b.width/2, y = b.y+b.height/2;
+        if (touch) {
+          await touch.send('Input.dispatchTouchEvent', {type:'touchStart',touchPoints:[{x,y}]});
+          await touch.send('Input.dispatchTouchEvent', {type:'touchMove',touchPoints:[{x:x+dx,y:y+dy}]});
+          await touch.send('Input.dispatchTouchEvent', {type:'touchEnd',touchPoints:[]});
+        } else {
+          await page.mouse.move(x,y); await page.mouse.down(); await page.mouse.move(x+dx,y+dy); await page.mouse.up();
+        }
+      };
+      for (const [dx,dy,number] of [[0,-90,'3'],[0,90,'2'],[-90,0,'3'],[90,0,'2']]) {
+        await swipeScreen(dx,dy); await expect(page.locator('#page-number')).toHaveValue(number);
+      }
+      await event(2); await expect(page.locator('#page-number')).toHaveValue('3');
+      await event(1); await expect(page.locator('#page-number')).toHaveValue('2');
+      await page.locator('#preview-menu-toggle').click(); await expect.poll(body).toMatch(/^Pageborne menu/);
+      await page.locator('#preview-menu-toggle').click();
+      // Verify transformed hit targets still use the device microphone and pair
+      // start/release; the separate web suite checks real audio capture/worklets.
+      await page.evaluate(() => {
+        const ask = window.__askUI;
+        window.__restoreHold = {hold:ask.hold,release:ask.release}; window.__holds = [];
+        ask.hold = source => window.__holds.push(source); ask.release = () => window.__holds.push('release');
+      });
+      const mic = await page.locator('#preview-speak').boundingBox();
+      if (touch) {
+        await touch.send('Input.dispatchTouchEvent', {type:'touchStart',touchPoints:[{x:mic.x+mic.width/2,y:mic.y+mic.height/2}]});
+        await expect.poll(() => page.evaluate(() => window.__holds)).toEqual(['phone']);
+        await touch.send('Input.dispatchTouchEvent', {type:'touchEnd',touchPoints:[]});
+      } else {
+        await page.mouse.move(mic.x+mic.width/2,mic.y+mic.height/2); await page.mouse.down(); await page.mouse.up();
+      }
+      await expect.poll(() => page.evaluate(() => window.__holds)).toEqual(['phone','release']);
+      await page.evaluate(() => Object.assign(window.__askUI,window.__restoreHold));
+      await page.screenshot({path:`${out}/${engine.name()}-even-landscape.png`});
+      await page.locator('#preview-fullscreen').click();
+      await expect(page.locator('.reader-landscape')).toHaveCount(0);
+      assert.equal(await position(), pagePlace);
+      assert.equal(await page.locator('.app').evaluate(el=>el.inert),false);
+      await touch?.detach();
+      result.evenLandscapeTouch = true;
 
       for (const value of ['auto', 'speed']) {
         await mode(value); await seek('300');
