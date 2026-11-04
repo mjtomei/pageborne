@@ -7,11 +7,13 @@ import { showLibrary, hideSettings, backToReading } from './ui-helpers.mjs';
 import { pdfFixture } from '../test/fixtures/pdfs.mjs';
 
 const out = 'test-results/reading-controls'; await mkdir(out, { recursive: true });
-const vite = await createServer({ cacheDir: '.state/vite-reading-controls', server: { host: '127.0.0.1', port: 0 }, clearScreen: false });
+const vite = await createServer({ mode: 'release', plugins: [{ name: 'controls-speech-fixture', transform(code, id) {
+  if (id.endsWith('/src/speech-setup.js')) return code.replace('start(initialize) {', 'start(initialize) { this.blocked = false; return Promise.resolve();');
+} }], cacheDir: '.state/vite-reading-controls', server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, clearScreen: false });
 await vite.listen(); const results = [];
 try {
-  for (const engine of [chromium, webkit]) {
-    const browser = await engine.launch(engine === chromium ? { executablePath: '/usr/bin/google-chrome', headless: true }
+  for (const engine of process.env.READING_BROWSER === 'chromium' ? [chromium] : [chromium, webkit]) {
+    const browser = await engine.launch(engine === chromium ? { executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true, args: ['--js-flags=--max-old-space-size=384'] }
       : { headless: true, ...(process.env.WEBKIT_PATH ? { executablePath: process.env.WEBKIT_PATH } : {}) });
     const result = { engine: engine.name(), passed: false, errors: [], physicalGlasses: false }; results.push(result);
     let page;
@@ -21,12 +23,6 @@ try {
       await page.addInitScript(() => {
         // An old preference must not restore the conflicting single-tap mapping.
         localStorage.setItem('even-reader:preferences:v1', JSON.stringify({ readingTap: 'conversation', pdfDefaults: { reflow: false } }));
-        const NativeWorker = Worker;
-        window.Worker = class {
-          constructor(url, options) { if (!String(url).includes('speech-worker')) return new NativeWorker(url, options); }
-          postMessage(data) { if (data.operation === 'prepare') queueMicrotask(() => this.onmessage?.({ data: { id: data.id, result: { backend: 'wasm', model: 'fast' } } })); }
-          terminate() {}
-        };
         window.__boxes = {}; window.__images = 0;
         const storage = new Map();
         window.flutter_inappwebview = { async callHandler(_, payload) {

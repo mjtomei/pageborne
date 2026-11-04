@@ -1,6 +1,6 @@
 # Configuration
 
-All versions share one source tree. Deployment-specific values belong in **`.env.local`**, copied from [`.env.example`](.env.example), and excluded from Git. Never put a pairing token in a tracked file. Environment variables from the shell/service take precedence. Vite also supports mode-specific ignored files such as `.env.debug.local` and `.env.release.local`; existing installations can keep those overrides. `npm run start:web` reads `.env.local`, then optional `.env.web.local` overrides.
+All devices use the same reader interface and source tree. Deployment-specific values belong in **`.env.local`**, copied from [`.env.example`](.env.example), and excluded from Git. Never put a pairing token in a tracked file. Environment variables from the shell/service take precedence. Vite also supports mode-specific ignored files such as `.env.debug.local` and `.env.release.local`; existing installations can keep those overrides. `npm run start:web` reads `.env.local`, then optional `.env.web.local` overrides.
 
 ## G2 reader without a desktop
 
@@ -34,9 +34,9 @@ PAGEBORNE_DEBUG_TERMINAL_AGENT=claude
 
 `PAGEBORNE_DEBUG_TERMINAL_PREVIOUS_URLS` can preserve links when the **same** server changes address. Do not use it to conflate unrelated servers. Public/private builds use the same reader, speech engine and integration code; there is no separate private source fork.
 
-## Phone/iPad web deployment
+## Desktop/mobile hosting
 
-The web reader currently uses a shared Terminal library. Install the library and reader-state extensions on your own server, plus conversation sync if you want complete shared chat history. Keep library links and state with that Terminal instance. The web companion does not supply Claude/Codex session ownership by itself.
+Browser hosting uses the same reading view as the glasses app, with a shared Terminal library. Install the library and reader-state extensions on your own server, plus conversation sync if you want complete shared chat history. Keep library links and state with that Terminal instance. The web companion does not supply Claude/Codex session ownership by itself.
 
 Add to `.env.local`:
 

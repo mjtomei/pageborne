@@ -10,7 +10,6 @@ const output = path.resolve(process.env.PDF_DECODER_RESULTS || 'test-results/pdf
 await mkdir(output, { recursive: true });
 const entry = path.join(output, 'entry.js'), bundle = path.join(output, 'bundle');
 await writeFile(entry, `export { PdfDocument } from ${JSON.stringify(path.resolve('src/pdf.js'))};
-export { WebPdf } from ${JSON.stringify(path.resolve('src/web-pdf.js'))};
 export { PdfDecoderFallbacks } from ${JSON.stringify(path.resolve('src/pdf-resources.js'))};`);
 await build({ mode: 'release', build: { outDir: bundle, emptyOutDir: true, lib: { entry, formats: ['es'], fileName: () => 'decoders.js' } } });
 const server = createApp({ distDir: bundle }).listen(0, '127.0.0.1');
@@ -85,15 +84,10 @@ try {
             if (!restored.progress.cached || layout.blocks.length !== blocks) throw new Error('Preparation cache was not restored');
             if (ink((await restored.renderPage(1)).canvas) < .2) throw new Error('Blank scan from cache');
           } finally { decoderUrls.push(...restored.decoderFallbacks.urls); await restored.destroy(); }
-          const web = new WebPdf(), canvas = document.createElement('canvas');
-          document.body.append(canvas); let webInk;
-          try { await web.open(bytes); await web.render(1, canvas, 600); webInk = ink(canvas); }
-          finally { decoderUrls.push(...web.decoderFallbacks.urls); await web.destroy(); canvas.remove(); }
-          return { blocks, scanInk, webInk, remainingUrls: decoderUrls.filter(url => !revoked.has(url)) };
+          return { blocks, scanInk, remainingUrls: decoderUrls.filter(url => !revoked.has(url)) };
         }, fixture);
         assert.ok(result.blocks > 0, 'scan produces reader blocks');
         assert.ok(result.scanInk > .2 && result.scanInk < .5, 'glasses scan retains the black rectangles');
-        assert.ok(result.webInk > .2 && result.webInk < .5, 'web reader retains the black rectangles');
         assert.deepEqual(result.remainingUrls, [], 'closing readers releases all decoder Blob URLs');
         assert.deepEqual(errors, []);
         assert.deepEqual(networkRequests, [], 'no network requests after loading the bundle');

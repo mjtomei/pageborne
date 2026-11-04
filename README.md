@@ -10,13 +10,13 @@ A reader for Even G2 glasses.
 - Underlined scan text reflowed as prose, with written margin annotations in a separate phone gallery
 - Timed autoscroll and speed reading
 - Daily reading history with a words-read graph and retained conversation links
-- An experimental phone/iPad web reader that shares the desktop library and conversations
+- One reading interface for glasses, desktop, phone and iPad, with a full-screen reading view and shared library and conversations
 
 ## Reading and conversations
 
 G2 supports native text, PDF reflow/figures, page reading, timed autoscroll and speed reading. PDFs can contain up to 1,000 pages within the 16 MiB file limit. Ready pages become readable while the rest prepare.
 
-**Reading history** in the library shows a daily word-count graph and a reading log with titles, locations, short excerpts and links to desktop conversations. Consecutive entries from the same document appear together with combined words and location/time ranges; the original per-page records remain saved. It estimates document reading from visible text and dwell time; Ask conversations are excluded. Words count when you move past them at 10–900 words/minute. Overlapping panes retain their dwell without counting the same exposure twice. Fast paging, image-only views, covered/background web pages and views idle for over five minutes are excluded; intentional rereading counts again. This is an estimate, not eye tracking. Web PDFs need an embedded text layer to contribute words.
+**Reading history** in the library shows a daily word-count graph and a reading log with titles, locations, short excerpts and links to desktop conversations. Consecutive entries from the same document appear together with combined words and location/time ranges; the original per-page records remain saved. It estimates document reading from visible text and dwell time; Ask conversations are excluded. Words count when you move past them at 10–900 words/minute. Overlapping panes retain their dwell without counting the same exposure twice. Fast paging, image-only views, covered/background web pages and views idle for over five minutes are excluded; intentional rereading counts again. This is an estimate, not eye tracking. Reflowed PDF text contributes words on every device; image-only pages do not.
 
 History starts when this feature is installed, is stored separately from the originals, and remains after document deletion. With the updated optional reader-state extension, it syncs through the desktop library and merges offline entries without duplicates. Linked conversations open in a history viewer even when the source document is gone; the desktop session must still exist and be reachable. Days follow the reading device’s local date.
 
@@ -25,6 +25,8 @@ An optional [desktop OCR daemon](desktop/ocr/README.md) uses Xiaomi-OCR-0 to pre
 The library supports **1 GiB of originals across up to 1,000 documents** (16 MiB per PDF, 4 MiB per text file). Startup loads the catalog only; document contents load when opened or needed by sync. Existing files and reading positions migrate automatically. Available device storage still applies.
 
 The library defaults to **Recent activity**: the newest addition, modification or explicit opening comes first. **Newest added** and **File name A–Z** are available on the phone. With even-terminal-patch 0.2.3, desktop addition dates are retained separately from original file modification dates and recovered for already-synced files. Older servers use the phone import date for new downloads; legacy files without dates retain their previous relative order.
+
+Use **Full screen** (⛶) above the glasses view to fill the device screen. The same pages, PDF reflow, menus, reading modes and Ask view work on every device. Swipe to navigate and use the displayed tap/hold guidance. **Hold to talk** uses the device microphone when supported; release to review, then choose Send. Glasses gestures continue to use the glasses microphone. Browser microphone access requires HTTPS or localhost and permission. Exit with ✕ or Escape; your reading and conversation positions are preserved. On browsers without native fullscreen, the view fills the available browser viewport.
 
 Markdown and `.txt` files use the same formatting on glasses and the web reader: single newlines within prose flow together, while blank lines separate paragraphs. Headings, lists and fenced code blocks follow Markdown formatting. The stored original stays unchanged.
 
@@ -60,7 +62,7 @@ cp .env.example .env.local
 # Edit .env.local with your own origins and paths.
 npm run build:debug    # explicit private profile
 npm run pack:debug     # private package; can embed the configured pairing token
-npm run build:web      # phone/iPad web frontend
+npm run build:web      # hosting bundle; same reader interface
 npm run start:web      # reads .env.local; serves the authenticated web reader
 ```
 

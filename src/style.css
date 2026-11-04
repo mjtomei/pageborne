@@ -656,3 +656,17 @@ input[type=checkbox][role=switch]:disabled{opacity:.42}
 .speech-setup-detail { margin:0; font-size:.8em; color:var(--muted); overflow-wrap:anywhere; }
 #speech-setup button { width:100%; }
 #speech-setup-export { margin-top:10px; }
+
+/* One reader on glasses, desktop and mobile. Keep the exact 2:1 display geometry. */
+.preview-stage{min-width:0}
+#preview-fullscreen{color:var(--accent);font-size:22px;min-width:44px;min-height:44px;padding:4px 8px}
+#preview-speak{color:var(--accent);min-height:44px;padding:4px 8px;font-size:12px;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;max-width:125px}
+.preview-actions{flex-wrap:wrap;justify-content:flex-end}
+body.reader-expanded{overflow:hidden}
+.reader-fullscreen{position:fixed;inset:0;z-index:1000;box-sizing:border-box;border:0;border-radius:0;height:100dvh;padding:max(4px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left));display:flex;flex-direction:column;color:#b8f6c8}
+.reader-fullscreen .preview-label{flex:none;min-height:44px}
+.reader-fullscreen .preview-stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.reader-fullscreen #preview{width:var(--screen-width,100%);max-width:100%;height:auto;flex:none;border-radius:0}
+.reader-fullscreen #glasses-hints,.reader-fullscreen #hints-toggle,.reader-fullscreen #reconnect{display:none}
+.reader-fullscreen #preview-fullscreen{order:5}
+@media(max-width:370px){.preview-label{gap:2px}.preview-actions{gap:0}#preview-speak{max-width:100px;padding-inline:4px}}

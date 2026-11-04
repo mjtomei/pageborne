@@ -39,7 +39,7 @@ import { installDebugExport } from './debug-export.js';
 import { DEBUG, BUILD_CHANNEL, WEB } from 'virtual:build-profile';
 import automaticTerminal from 'virtual:automatic-terminal';
 import { automaticTerminalConfig, migrateTerminalPreferences } from './terminal-pairing.js';
-import { WebReading } from './web-reading.js';
+import { FullscreenReader, installHoldButton } from './fullscreen-reader.js';
 import { SharedReaderState, scopedReaderConfig } from './shared-reader-state.js';
 import { desktopPdfCache } from './desktop-pdf-cache.js';
 import { ReadingTracker, ReadingLog } from './reading-activity.js';
@@ -48,7 +48,7 @@ import { glassesReadingUnits } from './reading-view.js';
 import { ReadingHistoryUI } from './reading-history-ui.js';
 
 const $ = id => document.getElementById(id);
-let webReading, sharedReader, PdfDocument;
+let fullscreenReader, sharedReader, PdfDocument;
 const diagnostics = new Diagnostics(undefined, { enabled: DEBUG });
 if (DEBUG) {
   window.addEventListener('error', event => diagnostics.error('js-error', event.error || new Error(event.message), { line: event.lineno, column: event.colno }));
@@ -154,11 +154,11 @@ delete preferences.preloadText; delete preferences.speed;
 function setConnection(text) {
   $('connection').textContent = text;
   const lower = text.toLowerCase();
-  const state = lower.startsWith('phone preview') ? 'Preview' : lower.startsWith('connecting') ? 'Connecting…'
+  const state = lower.startsWith('device reader') ? 'Reader' : lower.startsWith('phone preview') ? 'Preview' : lower.startsWith('connecting') ? 'Connecting…'
     : (lower === 'connected' || lower.endsWith(' connected')) ? 'Connected' : lower.includes('paused') ? 'Paused' : lower.includes('closed') ? 'Closed' : 'Needs attention';
   $('connection-state').textContent = state; $('connection-state').title = text;
   $('connection-state').closest('.connection-line').dataset.state = state.toLowerCase().replace(/[^a-z]/g, '');
-  $('reconnect').hidden = ['Preview', 'Connected', 'Connecting…'].includes(state);
+  $('reconnect').hidden = ['Preview', 'Reader', 'Connected', 'Connecting…'].includes(state);
 }
 const glasses = new GlassesDisplay({ diagnostics, onStatus: text => {
   setConnection(text); lastSentKey = ''; dirty = true;
@@ -192,7 +192,7 @@ askUI = new AskUI({
   readBindings: () => preferences.askSessions || {}, saveBindings: bindings => { preferences.askSessions = bindings; savePreferences(); },
   readChats: () => preferences.askChats || {}, saveChats: chats => { preferences.askChats = chats; savePreferences(); },
   reveal: () => {
-    if (WEB) { webReading?.openChat(); return; }
+    if (fullscreenReader?.active) return;
     showTab(null); renderControls();
     // Wide screens show the conversation in the right-hand pane; keep the header in view.
     if (matchMedia('(min-width: 1200px)').matches) document.querySelector('.reader-content').scrollTop = 0;
@@ -214,8 +214,7 @@ askUI = new AskUI({
   goToPosition: (percent, turn) => {
     askUI.returnToReading();
     if (!layout) return;
-    if (WEB) { webReading.closeChat(); webReading.goTo(layout.maxY * Math.min(100, Math.max(0, Number(percent) || 0)) / 100, turn?.page); }
-    else if (turn?.page && layout.format === 'pdf') jump(layout.blocks.find(b => b.page === turn.page)?.y || 0);
+    if (turn?.page && layout.format === 'pdf') jump(layout.blocks.find(b => b.page === turn.page)?.y || 0);
     else seekPercent(Math.min(100, Math.max(0, Number(percent) || 0)));
   },
   captureQrImage: async kind => {
@@ -232,20 +231,15 @@ sharedReader = new SharedReaderState({
   documents: () => snapshot?.documents || [], read: () => preferences,
   save: patch => { Object.assign(preferences, patch); savePreferences(); },
   changed: ({ scopeChanged, chats }) => {
-    if (scopeChanged) { askUI.close(); webReading?.closeChat(); }
+    if (scopeChanged) askUI.close();
     // Merge only coordinates into live turns: never discard an in-flight answer.
     for (const [key, turns] of askUI.chat.cache) for (const turn of turns) {
       const saved = chats[key]?.find(t => t.id === turn.id);
       if (saved?.position != null && turn.position == null) { turn.position = saved.position; turn.page = saved.page; }
     }
-    askUI.loadModels(); askUI.renderedChat = null; askUI.render(); webReading?.update();
+    askUI.loadModels(); askUI.renderedChat = null; askUI.render();
   },
 });
-if (WEB) {
-  reader.mode = 'page';
-  webReading = new WebReading({ ask: askUI, position: y => { reader.y = y; changed(); }, changed,
-    library: () => setLibraryOpen(true), settings: () => setSettingsOpen(true) });
-}
 setInterval(() => { if (!document.hidden && libraryReady) void sharedReader.sync(); }, 5000);
 function readingSessions(entry) {
   const sessions = [...(entry.sessions || [])];
@@ -286,20 +280,18 @@ const readingHistory = new ReadingHistoryUI({
 $('reading-history-open').onclick = () => void readingHistory.open();
 setInterval(() => { if (libraryReady && !document.hidden) void syncReading(); }, 30000);
 function sampleReading(frame, now = performance.now()) {
-  if (!libraryReady || !readingLog || !active || !layout || !WEB && !frame) { readingTracker.observe(null, now); return; }
-  const blocked = readingHistory.dialog.open || footnotesView || (WEB
-    ? document.hidden || webReading.dialog.open || $('library-panel').dataset.open === 'true' || !$('shared-settings').hidden
-    : glasses.bridge ? !glasses.ready || glasses.suspended || frame.selection !== selectionVersion
-      : document.hidden || previewMenu || frame.selection !== selectionVersion || $('library-panel').dataset.open === 'true' || !$('shared-settings').hidden);
+  if (!libraryReady || !readingLog || !active || !layout || !frame) { readingTracker.observe(null, now); return; }
+  const blocked = readingHistory.dialog.open || footnotesView || (glasses.bridge ? !glasses.ready || glasses.suspended || frame.selection !== selectionVersion
+      : document.hidden || previewMenu || frame.selection !== selectionVersion || !fullscreenReader?.active && drawerQuery.matches && $('library-panel').dataset.open === 'true' || !$('shared-settings').hidden);
   if (blocked) { readingTracker.observe(null, now); return; }
-  const displayed = WEB ? layout : frame?.layout;
+  const displayed = frame.layout;
   // Reflow/font/partial-load rebuilds aren't page turns.
   if (readingLayout !== displayed) { readingTracker.reset(); readingLayout = displayed; }
-  if (!WEB && (frame.message || frame.dialog || frame.picker || frame.positionPicker || frame.modePicker)) { readingTracker.observe(null, now); return; }
-  const units = WEB ? webReading.readingUnits() : glassesReadingUnits(frame, frame.layout === reader.pageLayout ? reader.speedReading.entries : undefined), config = readerConnection();
+  if (frame.message || frame.dialog || frame.picker || frame.positionPicker || frame.modePicker) { readingTracker.observe(null, now); return; }
+  const units = glassesReadingUnits(frame, frame.layout === reader.pageLayout ? reader.speedReading.entries : undefined), config = readerConnection();
   readingTracker.observe({ document: { id: active.id, key: active.positionKey, title: String(active.title).slice(0, 300), revision: active.revision },
     scope: config.chatScope || '', platform: WEB ? 'web' : glasses.bridge ? 'glasses' : 'preview',
-    position: WEB ? readingPercent() : Math.min(100, Math.max(0, 100 * frame.y / (displayed?.maxY || 1))), units }, now);
+    position: Math.min(100, Math.max(0, 100 * frame.y / (displayed?.maxY || 1))), units }, now);
 }
 async function preserveReadingSessions(doc) {
   if (!readingLog) return;
@@ -309,11 +301,11 @@ async function preserveReadingSessions(doc) {
 function dispatchAction(action, source = 'glasses') {
   if (source === 'glasses') previewInput?.cancel();
   else diagnostics.log('gesture', { action, source });
-  handleAction(action, true);
+  handleAction(action, true, source);
   // Keep the simulated root library reachable on the phone after Pages Back.
   if (source !== 'glasses' && action === 'back' && picker && !active) setLibraryOpen(false, false);
 }
-function handleAction(action, gesture = false) {
+function handleAction(action, gesture = false, source) {
   if (askUI?.speech.setup.blocked) return;
   if (action === 'menu') { previewInput?.cancel(); reader.pause(); modePicker = null; previewMenu = previewMenu ? null : { index: 0 }; dirty = true; return; }
   if (previewMenu) {
@@ -343,7 +335,7 @@ function handleAction(action, gesture = false) {
     positionPickerHold = true; dirty = true; return;
   }
   if (positionPickerHold && ['ask-release', 'ask-cancel'].includes(action)) { positionPickerHold = false; return; }
-  if (askUI?.handle(action)) return;
+  if (askUI?.handle(action, source === 'glasses' ? 'glasses' : navigator.mediaDevices?.getUserMedia ? 'phone' : undefined)) return;
   if (action === 'footnotes') { toggleFootnotes(); return; }
   if (footnotesView && ['play', 'back'].includes(action)) { closeFootnotes(); return; }
   if (footnotesView && ['previous', 'next'].includes(action)) { move(action === 'next' ? 1 : -1); return; }
@@ -538,10 +530,10 @@ function openFromPhone(id) {
   selectDocument(id);
   setLibraryOpen(false);
 }
-const drawerQuery = matchMedia(WEB ? '(min-width: 0px)' : '(max-width: 999px)');
+const drawerQuery = matchMedia('(max-width: 999px)');
 let settingsTrigger = null;
 function setLibraryOpen(open, focus = true) {
-  if (open) previewInput?.cancel();
+  if (open) { previewInput?.cancel(); fullscreenReader?.exit(); }
   const drawer = drawerQuery.matches;
   const shown = drawer ? open : true;
   $('library-panel').dataset.open = String(shown);
@@ -554,7 +546,6 @@ function setLibraryOpen(open, focus = true) {
   // The dock remains usable while the drawer covers the reader. Keep covered
   // controls out of keyboard/VoiceOver navigation and notices in view.
   if (drawer && open) $('library-body').before($('notice'));
-  else if (WEB) document.querySelector('.reader-content').append($('notice'));
   else document.querySelector('.navigation-tabs').before($('notice'));
   for (const section of document.querySelector('.reader-content').children) section.inert = drawer && open;
   if (!drawer || !focus) return;
@@ -565,6 +556,7 @@ new ResizeObserver(() => document.documentElement.style.setProperty('--dock-heig
 $('library-toggle').onclick = () => setLibraryOpen($('library-panel').dataset.open !== 'true');
 // Shared settings can be opened directly from the reader or from the library.
 function setSettingsOpen(open, focus = true, trigger = $('settings-toggle')) {
+  if (open) fullscreenReader?.exit();
   if (open && $('shared-settings').hidden) settingsTrigger = trigger;
   if (!open) {
     askUI?.cancelPairing();
@@ -635,7 +627,6 @@ async function selectDocument(id, save = true) {
   active = snapshot?.documents.find(d => d.id === id) || null;
   diagnostics.renderer = active?.format === 'pdf' ? 'pdf-image' : 'native-text';
   layout = null;
-  const resetWeb = WEB ? webReading.setDocument(null).catch(error => diagnostics.error('web-close-error', error)) : null;
   if (active) {
     if (save) recordDocumentOpen(preferences, active.id);
     $('title').textContent = active.title; $('doc-path').textContent = active.id;
@@ -647,7 +638,7 @@ async function selectDocument(id, save = true) {
       renderLibrary(); renderOutline(); renderBookmarks(); renderControls();
       try {
         const document = await trackPdfPreparation(async () => {
-          await resetWeb; controller.signal.throwIfAborted();
+          controller.signal.throwIfAborted();
           return store.loadDocument(selected, { signal: controller.signal });
         });
         if (version !== selectionVersion) return;
@@ -659,23 +650,7 @@ async function selectDocument(id, save = true) {
         dirty = true; renderControls(); return;
       } finally { if (documentLoadController === controller) documentLoadController = null; }
     }
-    if (WEB) {
-      const saved = preferences.positions[documentKey()];
-      if (active.format !== 'pdf') buildLayout();
-      const doc = active, initial = layout;
-      const open = async () => {
-        if (doc.format === 'pdf') await askUI.speech.releaseForReading();
-        if (version !== selectionVersion) return;
-        const next = await webReading.setDocument(doc, initial);
-        if (version !== selectionVersion || !next) return;
-        layout = next;
-        reader.setDocument(layout.maxY, restorePosition(saved), layout.pages);
-        webReading.goTo(reader.y);
-        notice(''); renderOutline(); renderBookmarks(); renderControls(); rememberPosition();
-        void sharedReader.sync();
-      };
-      void (doc.format === 'pdf' ? trackPdfPreparation(open) : open()).catch(error => { if (version === selectionVersion) notice(`Could not open document: ${error.message}`, true); });
-    } else if (active.format === 'pdf') {
+    if (active.format === 'pdf') {
       reader.setDocument(0); notice('Opening PDF…');
       pdfOpenMessage = { body: 'Opening PDF…', status: 'Loading', kind: 'loading' };
       const ocrConfig = askUI.readConfig();
@@ -684,6 +659,13 @@ async function selectDocument(id, save = true) {
         if (connectionMode(ocrConfig) === 'terminal' && ocrConfig.endpoint)
           ocrClient = new EvenTerminal(ocrConfig, { ...askUI.options(), diagnostics: undefined });
       } catch { /* An incomplete optional connection must not prevent reading. */ }
+      try {
+        await trackPdfPreparation(async () => { PdfDocument ||= (await import('./pdf.js')).PdfDocument; });
+      } catch (error) {
+        if (version === selectionVersion) { notice(`Could not load PDF reader: ${error.message}`, true); pdfOpenMessage = { body: 'Could not load PDF reader.\nReopen the document to retry.', status: 'PDF error', kind: 'error' }; dirty = true; }
+        return;
+      }
+      if (version !== selectionVersion) return;
       pdfDocument = new PdfDocument({ diagnostics, selection: version,
         preparationCache: desktopPdfCache(pdfPreparationCache.forDocument(active.id), ocrClient, active.id, () => version === selectionVersion) }); const opening = pdfDocument;
       const { mode, keepMarginNotes, keepRepeatedText, normalizeColors, reflow, textSize } = pdfSettingsFor(preferences, documentKey());
@@ -835,7 +817,6 @@ function renderBookmarks() {
   });
 }
 function renderPassage() {
-  if (WEB) { webReading?.update(); return; }
   pdfGallery.setLayout(layout?.format === 'pdf' ? layout : null);
   pdfAnnotations.setLayout(layout?.format === 'pdf' ? layout : null);
   if (layout?.format === 'pdf') { passage.setLayout(null, 0); pdfPassage.setLayout(layout, reader.y); }
@@ -844,6 +825,11 @@ function renderPassage() {
   renderFollow();
 }
 function renderControls() {
+  const micAvailable = !!navigator.mediaDevices?.getUserMedia && !!globalThis.AudioWorkletNode;
+  $('preview-speak').hidden = !micAvailable;
+  $('preview-speak').disabled = !libraryReady || !active || pdfPreparations.size > 0 || !!askUI.speech.setup.blocked;
+  $('preview-speak').textContent = pdfPreparations.size ? 'PDF loading' : ['starting', 'listening'].includes(askUI.session.status) ? 'Release to review' : 'Hold to talk';
+
   const pdf = active?.format === 'pdf';
   const speedMode = reader.mode === 'speed';
   const rate = speedMode ? reader.speedReading.rate : reader.speed;
@@ -1032,7 +1018,7 @@ function useReadyPdfPages() {
   const { readyPages, totalPages } = layout.preparation;
   notice(`${readyPages} of ${totalPages} PDF pages ready. You can read now; more pages are preparing. Position and reading time cover the ready pages.`);
 }
-function jump(position) { useReadyPdfPages(); previewInput?.cancel(); previewMenu = null; askUI?.returnToReading(); if (footnotesView) closeFootnotes(); picker = null; positionPicker = null; modePicker = null; reader.jump(position); if (WEB) webReading?.goTo(reader.y); }
+function jump(position) { useReadyPdfPages(); previewInput?.cancel(); previewMenu = null; askUI?.returnToReading(); if (footnotesView) closeFootnotes(); picker = null; positionPicker = null; modePicker = null; reader.jump(position); }
 let seekFrame = 0;
 function seekPercent(percent) {
   useReadyPdfPages();
@@ -1562,6 +1548,8 @@ previewInput = installPreviewInput($('preview'), {
     return !$('figure-dialog').open && !$('annotation-dialog').open && !event.target.closest?.('input, textarea, select, button, [contenteditable], #passage, #pdf-passage, #pdf-gallery, #pdf-annotations, #ask-history, #ask-passage') && !!(active || picker || positionPicker || modePicker || previewMenu);
   },
 });
+fullscreenReader = new FullscreenReader(document.querySelector('.preview-wrap'), $('preview-fullscreen'), { cancel: () => previewInput.cancel() });
+installHoldButton($('preview-speak'), { start: () => askUI.hold('phone'), release: () => askUI.release(), cancel: () => askUI.cancelDictation() });
 document.querySelector('.brand').onclick = event => { event.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); };
 function flushPosition() { rememberPosition(); phonePreferences?.flush(); }
 document.addEventListener('visibilitychange', () => {
@@ -1581,7 +1569,6 @@ function nativePdfFrame() {
 }
 function animate(now, immediate = false) {
   sampleReading(glasses.bridge ? glasses.readingFrame : readingPreview, now);
-  if (WEB) { askUI?.session.tick(now, reducedMotion.matches); webReading?.update(); return; }
   if (askUI?.speech.setup.blocked) {
     playbackBlocked = true;
     lastTick = now;
@@ -1778,8 +1765,6 @@ async function openLibrary() {
 }
 window.addEventListener('flutterInAppWebViewPlatformReady', () => openLibrary());
 async function start() {
-  // Original-page web reading doesn't need the glasses reflow/OCR runtime.
-  if (!WEB) ({ PdfDocument } = await import('./pdf.js'));
   // requestAnimationFrame stops when the phone screen is hidden. Timer ticks keep
   // glasses input and automatic line advances working for as long as the WebView is alive.
   scheduleAnimation(100);
@@ -1788,7 +1773,8 @@ async function start() {
   await openLibrary();
   // Phone controls work independently while the SDK waits for its WebView host.
   if (!WEB && !glasses.ready) void glasses.connect();
-  if (!WEB) setTimeout(() => { if (!glasses.bridge) setConnection('Phone preview · Open in the Even app for glasses'); }, 5000);
+  if (WEB) setConnection('Device reader');
+  else setTimeout(() => { if (!glasses.bridge) setConnection('Device reader · Open in the Even app for glasses'); }, 5000);
 }
 $('app-version').textContent = `Pageborne ${VERSION} · ${BUILD_CHANNEL}`;
 if (DEBUG) {

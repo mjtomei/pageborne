@@ -11,7 +11,7 @@ This release separates a standard reader from optional desktop integrations. It 
 | Shared library/Librarian directory | Pageborne library/workspace extension | Import documents locally; no desktop library sync |
 | Full conversation sync | Conversation extension and provider transcript reader | Basic reply tracking; no guarantee of messages sent elsewhere |
 | Shared passage/chat links | Reader-state extension on the same Terminal instance/library | Links remain local |
-| Phone/iPad shared-library web reader | Web companion plus compatible Terminal extensions | No standalone static deployment |
+| Desktop/mobile shared-library hosting | Shared reader plus hosting server and compatible Terminal extensions | No standalone static deployment |
 | Native Claude session creation | Custom fork patch and matching desktop tooling | Select an existing supported session |
 
 The client checks advertised `/api/info` capabilities before using custom routes. [Integration instructions](integrations/even-terminal/README.md) describe the helpers and registration points. The historical `native-claude.patch` targets a customized fork based on Terminal 0.8.1; it is **not** a universal patch for arbitrary upstream versions. Run `git apply --check` and review/adapt it to your server. Choose a model supported by your installed CLI; no model entitlement is provided here. The entire custom Terminal/provider stack is not bundled in this repository.

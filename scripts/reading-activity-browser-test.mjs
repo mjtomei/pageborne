@@ -58,13 +58,11 @@ try {
       await page.evaluate(() => window.__reading.sync());
       await expect.poll(() => page.evaluate(() => window.__reading.units.length)).toBeGreaterThan(10);
       const initial = await page.evaluate(() => window.__reading.entries.reduce((n, e) => n + e.words, 0));
-      await page.waitForTimeout(mode === 'web' ? 15000 : 6500);
-      if (mode === 'release') await page.evaluate(() => window.__reading.next());
-      else await page.locator('#web-document').evaluate(el => { el.scrollTop += el.clientHeight - 60; });
+      await page.waitForTimeout(6500);
+      await page.evaluate(() => window.__reading.next());
       await expect.poll(() => page.evaluate(() => window.__reading.entries.reduce((n, e) => n + e.words, 0))).toBeGreaterThan(initial);
       const read = await page.evaluate(() => window.__reading.entries.reduce((n, e) => n + e.words, 0));
-      if (mode === 'release') await page.evaluate(() => window.__reading.next());
-      else await page.locator('#web-document').evaluate(el => { el.scrollTop += el.clientHeight; });
+      await page.evaluate(() => window.__reading.next());
       await page.waitForTimeout(400);
       assert.ok(await page.evaluate(() => window.__reading.entries.reduce((n, e) => n + e.words, 0)) <= read + 15, 'fast paging cannot credit a whole screen');
       await page.evaluate(() => window.__reading.sync());

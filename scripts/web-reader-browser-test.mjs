@@ -41,10 +41,7 @@ app.use('/api', api);
 const backend = app.listen(0,'127.0.0.1'); await new Promise(r => backend.once('listening',r));
 const built = !!process.env.WEB_BUILT;
 const vite = built ? null : await createServer({ mode: 'web', plugins: [displayProbe(), { name: 'web-fixture', transform(code,id) {
- if (id.endsWith('/src/web-pdf.js')) return code.replace('this.port = new PdfWorker();', `window.__pdfSteps = ['worker']; this.port = new PdfWorker(); this.port.addEventListener('message', e => window.__pdfSteps.push(e.data.action || 'message'));`)
- .replace('this.pdf = await Promise.race', `window.__pdfSteps.push('document'); this.pdf = await Promise.race`)
- .replace('const blocks = [];', `window.__pdfSteps.push('loaded'); const blocks = [];`)
- .replace('await this.text(1);', `window.__pdfSteps.push('text'); await this.text(1); if (window.__holdPdfOpen) await new Promise(resolve => { window.__releasePdfOpen = resolve; }); window.__pdfSteps.push('done');`);
+ if (id.endsWith('/src/pdf.js')) return code.replace("  async open(content, mode, onProgress = () => {}, options = {}) {", "  async open(content, mode, onProgress = () => {}, options = {}) { if (window.__holdPdfOpen) await new Promise(resolve => { window.__releasePdfOpen = resolve; });");
  }, configureServer(server) { server.middlewares.use('/web/config', (req,res) => { res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({ mode: 'terminal', endpoint: `http://${req.headers.host}`, token: 'fixture', agent: 'claude' })); }); } }], cacheDir: '.state/vite-web-test', server: { host:'127.0.0.1', port:0, hmr:false, watch:null, proxy: { '/api': `http://127.0.0.1:${backend.address().port}` } }, clearScreen: false });
 await vite?.listen();
 let production;
@@ -54,114 +51,129 @@ await mkdir('test-results/web-reader', { recursive: true });
 const results = [];
 try {
  for (const engine of (process.env.WEBKIT_ONLY ? [webkit] : process.env.WEB_BROWSER === 'chromium' ? [chromium] : [chromium, webkit])) {
-  const browser = await engine.launch({ executablePath: engine === chromium ? '/usr/bin/google-chrome' : process.env.WEBKIT_PATH, headless: true });
-  try { for (const viewport of [{ width:393,height:852 },{ width:834,height:1194 }]) {
-   const page = await browser.newPage({ viewport }); const errors=[]; page.on('pageerror',e=>errors.push(e.message)); page.on('console', m => { if (m.type() === 'error') console.error('browser:', m.text().slice(0,500)); });
-   let startupAttempts = 0; const codeResponses = [];
-   if (built) {
-    // A dropped cellular request must recover without asking the user to clear
-    // Safari's caches. Do this against the actual bundled entry and compressed server.
-    await page.route(/\/assets\/main-[\w-]+\.js$/, async route => { if (++startupAttempts === 1) await route.abort('failed'); else await route.continue(); });
-    page.on('response', response => { if (/\/assets\/.*\.(js|css)$/.test(response.url()) && response.status() === 200) codeResponses.push(response); });
-   }
+  const browser = await engine.launch({ executablePath: engine === chromium ? process.env.CHROME_PATH || '/usr/bin/google-chrome' : process.env.WEBKIT_PATH, headless: true,
+    args: engine === chromium ? ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--js-flags=--max-old-space-size=384'] : [] });
+  try { for (const viewport of [{ width:393,height:852 },{ width:834,height:1194 },{ width:1440,height:900 }]) {
+   const page = await browser.newPage({ viewport }); const errors=[]; page.on('pageerror',e=>errors.push(e.message));
+   let startupAttempts = 0;
+   if (built) await page.route(/\/assets\/main-[\w-]+\.js$/, async route => { if (++startupAttempts === 1) await route.abort('failed'); else await route.continue(); });
    try {
     await page.goto(baseUrl, { waitUntil: 'commit', timeout: 30000 });
     await expect(page.locator('[data-document-id="paper.md"]')).toBeAttached({ timeout:30000 });
-    if (built) {
-     assert.equal(startupAttempts, 2);
-     assert.equal(await page.locator('link[rel="modulepreload"]').count(), 0);
-     const sizes = await Promise.all(codeResponses.map(async r => Number((await r.allHeaders())['content-length'] || 0)));
-     assert.ok(sizes.reduce((sum, n) => sum + n, 0) < 1_000_000, `Startup download: ${sizes}`);
-     assert.ok(codeResponses.every(r => !/\/(?:web-pdf|pdf)-/.test(new URL(r.url()).pathname)));
-    }
-    if (await page.locator('#library-panel').getAttribute('data-open') !== 'true') await page.locator('#library-toggle').click();
+    if (built) { assert.equal(startupAttempts, 2); assert.equal(await page.locator('link[rel="modulepreload"]').count(), 0); }
     await page.locator('[data-document-id="paper.md"] .document-card').click();
-    await expect(page.locator('.web-prose strong')).toHaveText('formatted');
+    await expect(page.locator('#preview')).toBeVisible();
+    await expect(page.locator('#passage')).toContainText('formatted');
     assert.equal(await page.evaluate(()=>window.unsafeMarkdown), undefined);
-    await expect(page.locator('#web-nearby')).toBeVisible({ timeout:15000 });
-    await page.screenshot({path:`test-results/web-reader/${engine.name()}-${viewport.width}-reader.png`});
-    await page.locator('#web-nearby').click();
-    await expect(page.locator('#web-chat-dialog')).toBeVisible();
-    await expect(page.locator('.ask-message-activity')).toHaveCount(1);
+    assert.equal(await page.locator('#web-reading, #web-chat-dialog').count(), 0);
+    await expect(page.locator('#preview-speak')).toBeEnabled();
+    const before = await page.locator('#position').inputValue();
+    // Reject native fullscreen, as on an unsupported browser; CSS must still work.
+    await page.evaluate(() => { window.__nativeFullscreen = document.documentElement.requestFullscreen; document.documentElement.requestFullscreen = () => Promise.reject(new Error('Not supported')); });
+    await page.locator('#preview-fullscreen').click();
+    await expect(page.locator('.reader-fullscreen')).toBeVisible();
+    await expect(page.locator('#preview-fullscreen')).toHaveAttribute('aria-label', 'Exit full screen');
+    const checkFit = async () => {
+      await expect.poll(async () => {
+        const b = await page.locator('#preview').boundingBox(), v = page.viewportSize();
+        return b.width > 200 && b.x >= 0 && b.y >= 0 && b.x+b.width <= v.width+1 && b.y+b.height <= v.height+1 && Math.abs(b.width / b.height - 2) < .01;
+      }).toBe(true);
+    };
+    await checkFit();
+    await page.screenshot({path:`test-results/web-reader/${engine.name()}-${viewport.width}-fullscreen.png`});
+    // Existing keyboard and touch navigation act on this same live view.
+    await page.locator('#preview').focus(); await page.keyboard.press('ArrowRight');
+    await expect(page.locator('#position')).not.toHaveValue(before);
+    const moved = await page.locator('#position').inputValue();
+    await page.setViewportSize({width:852,height:393}); await checkFit();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.reader-fullscreen')).toHaveCount(0);
+    await expect(page.locator('#position')).toHaveValue(moved);
+    await page.setViewportSize(viewport);
+    await page.locator('#ask-open').click();
+    await expect(page.locator('#ask-messages')).toContainText('existing desktop session', {timeout:15000});
     await expect(page.locator('#ask-messages')).not.toContainText('Checking the relevant passage.');
-    const action = await page.locator('.ask-message-activity .ask-message-text').evaluate(el => ({
-      height: el.getBoundingClientRect().height, line: parseFloat(getComputedStyle(el).lineHeight), clamp: getComputedStyle(el).webkitLineClamp,
-      overflow: getComputedStyle(el).textOverflow, width: el.clientWidth, contentWidth: el.scrollWidth }));
-    assert(Math.abs(action.height - action.line * 2) <= 1); assert.equal(action.clamp, '2');
-    assert.notEqual(await page.locator('.ask-message-activity').first().evaluate(el => getComputedStyle(el).color),
-      await page.locator('.ask-message-assistant').first().evaluate(el => getComputedStyle(el).color));
-    await expect(page.locator('#ask-messages')).toContainText('existing desktop session');
+    await expect(page.locator('.ask-message-activity')).toHaveCount(1);
     await expect(page.locator('#ask-chat-model')).toHaveValue('codex');
-    await page.screenshot({path:`test-results/web-reader/${engine.name()}-${viewport.width}-chat.png`});
     await page.getByRole('button',{name:/^Go to the passage/}).first().click();
-    await expect(page.locator('#web-chat-dialog')).not.toBeVisible();
-    assert.ok(await page.locator('#web-document').evaluate(el=>el.scrollTop)>1000);
-    await page.locator('#web-chat').click();
+    assert(Number(await page.locator('#position').inputValue()) > 50);
+    await page.locator('#ask-open').click();
     turns = [...turns,{id:'external',question:'Sent elsewhere',answer:'A synchronized reply.',state:'complete'}];
     if (!built) await page.evaluate(()=>window.__askUI.pollFooter());
     await expect(page.locator('#ask-messages')).toContainText('Sent elsewhere');
-    await store.update({ document: 'paper.md', agent: 'codex', sessionId: 'shared-paper', anchors: [{ id: 'external', aliases: [], position: 40 }] });
-    await expect(page.getByRole('button', { name: /^Go to the passage/ })).toHaveCount(2, { timeout: 15000 });
-    await page.locator('#ask-question').fill('Web first question'); await page.locator('#ask-send').click();
+    await page.locator('#ask-question').fill('Unified first question'); await page.locator('#ask-send').click();
     await expect.poll(() => prompts.length).toBe(1);
-    await page.locator('#ask-question').fill('Web follow-up while busy'); await expect(page.locator('#ask-send')).toBeEnabled(); await page.locator('#ask-send').click();
+    await page.locator('#ask-question').fill('Follow-up while busy'); await page.locator('#ask-send').click();
     await expect.poll(() => prompts.length).toBe(2);
     assert(prompts.every(p => p.sessionId === 'shared-paper'));
-    await page.locator('#web-chat-close').click(); await expect(page.locator('#web-speak')).toBeEnabled(); await page.locator('#web-chat').click();
-    turns.at(-2).state = 'complete'; turns.at(-2).answer = 'First web answer';
-    turns.at(-1).state = 'complete'; turns.at(-1).answer = 'Second web answer'; busy = false;
-    await expect(page.locator('#ask-messages')).toContainText('First web answer'); await expect(page.locator('#ask-answer')).toHaveText('Second web answer');
-    assert(!await page.locator('#ask-messages').innerText().then(t => t.includes('Pageborne question')));
-    await page.locator('#web-chat-close').click();
-    await page.locator('#library-toggle').click();
+    turns.at(-2).state = 'complete'; turns.at(-2).answer = 'First answer';
+    turns.at(-1).state = 'complete'; turns.at(-1).answer = 'Second answer'; busy = false;
+    await expect(page.locator('#ask-messages')).toContainText('First answer');
+    await expect(page.locator('#ask-answer')).toHaveText('Second answer');
+    if (!built && engine === chromium) {
+      // Real browser microphone + AudioWorklet; substitute only model inference.
+      await page.evaluate(() => {
+        const ask = window.__askUI;
+        ask.speech.open = () => {}; ask.speech.vocabulary = () => [];
+        ask.stream = { start(){}, receive(bytes){ window.__audioBytes = (window.__audioBytes || 0) + bytes.length; }, cancel(){}, finish: async () => ({ text: 'Question from the device microphone.' }) };
+        const get = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+        navigator.mediaDevices.getUserMedia = async options => window.__micStream = await get(options);
+        ask.returnToReading();
+      });
+      await page.locator('#preview-fullscreen').click();
+      const hold = async selector => { const b = await page.locator(selector).boundingBox(); await page.mouse.move(b.x+b.width/2,b.y+b.height/2); await page.mouse.down(); };
+      await hold('#preview-speak');
+      await expect.poll(() => page.evaluate(()=>window.__askUI.session.status)).toBe('listening');
+      await expect.poll(() => page.evaluate(()=>window.__audioBytes || 0)).toBeGreaterThan(3200);
+      await page.mouse.up();
+      await expect.poll(() => page.evaluate(()=>window.__askUI.session.review?.text)).toBe('Question from the device microphone.');
+      assert(await page.evaluate(()=>window.__micStream.getTracks().every(t=>t.readyState==='ended')));
+      assert.equal(prompts.length,2,'release reviews without sending');
+      await page.evaluate(()=>window.__askUI.cancelReview());
+      await hold('#preview');
+      await expect.poll(() => page.evaluate(()=>window.__askUI.session.status)).toBe('listening');
+      await page.locator('#preview').dispatchEvent('pointercancel', {pointerId:1});
+      await page.mouse.up();
+      await expect.poll(() => page.evaluate(()=>window.__micStream.getTracks().every(t=>t.readyState==='ended'))).toBe(true);
+      await page.keyboard.press('Escape');
+      // Permission failure produces an actionable error and leaves typing usable.
+      await page.evaluate(()=>{ navigator.mediaDevices.getUserMedia=async()=>{throw new DOMException('Microphone permission denied','NotAllowedError');}; });
+      await hold('#preview-speak'); await page.mouse.up();
+      await expect.poll(() => page.evaluate(()=>window.__askUI.phoneMic.capturing)).toBe(false);
+    }
+    if (await page.locator('#library-panel').getAttribute('data-open') !== 'true') await page.locator('#library-toggle').click();
     if (!built) await page.evaluate(() => { window.__holdPdfOpen = true; });
     await page.locator('[data-document-id="original.pdf"] .document-card').click();
     if (!built) {
-      await expect.poll(() => page.evaluate(() => typeof window.__releasePdfOpen)).toBe('function');
-      for (const id of ['web-chat', 'web-speak', 'web-nearby']) await expect(page.locator(`#${id}`)).toBeDisabled();
-      await expect(page.locator('#web-chat')).toContainText('Ask after loading');
-      await expect(page.locator('#web-speak')).toContainText('PDF processing');
+      await expect.poll(() => page.evaluate(() => typeof window.__releasePdfOpen),{timeout:30000}).toBe('function');
+      await expect(page.locator('#preview-speak')).toBeDisabled();
+      await expect(page.locator('#preview-speak')).toHaveText('PDF loading');
       assert.equal(await page.evaluate(() => window.__askUI.open()), false);
       await page.evaluate(() => { window.__holdPdfOpen = false; window.__releasePdfOpen(); });
     }
-    await expect(page.locator('.web-pdf-page')).toHaveCount(2,{timeout:30000});
-    await expect(page.locator('#web-chat')).toBeEnabled();
-    await expect(page.locator('#web-speak')).toBeEnabled();
-    await expect(page.locator('#web-chat')).toHaveText('Chat');
-    await expect(page.locator('#web-speak')).toHaveText('Hold to talk');
-    await expect.poll(()=>page.locator('.web-pdf-page canvas').first().evaluate(c=>c.width)).toBeGreaterThan(100);
-    await expect(page.locator('#web-nearby')).toBeVisible({timeout:15000});
-    await page.locator('#web-nearby').click();
-    await page.getByRole('button',{name:/^Go to the passage/}).first().click();
-    await expect(page.locator('#web-page-label')).toHaveText('Page 2 of 2');
-    await expect(page.locator('.web-pdf-page[data-page="2"]')).toHaveAttribute('data-rendered', /[0-9]+/, {timeout: 30000});
+    await expect.poll(async()=>Number(await page.locator('#page-number').getAttribute('max')),{timeout:30000}).toBeGreaterThan(1);
+    await expect(page.locator('#preview-speak')).toBeEnabled({timeout:30000});
+    await expect(page.locator('#pdf-passage canvas').first()).toBeAttached({timeout:30000});
+    if (!built) assert(await page.evaluate(()=>window.__askUI.snapshot().layout.blocks.some(block=>block.page === 2)));
+    await page.locator('#preview-fullscreen').click(); await checkFit();
     await page.screenshot({path:`test-results/web-reader/${engine.name()}-${viewport.width}-pdf.png`});
-    if (!built) {
-    await page.evaluate(() => {
-      window.__voiceCalls = []; const ask = window.__askUI;
-      window.__voiceOriginal = { hold: ask.hold, release: ask.release };
-      ask.hold = async source => { window.__voiceCalls.push(['hold', source]); };
-      ask.release = async () => { window.__voiceCalls.push(['release']); };
-    });
-    const mic = await page.locator('#web-speak').boundingBox();
-    await page.mouse.move(mic.x+mic.width/2,mic.y+mic.height/2); await page.mouse.down();
-    await expect(page.locator('#web-speak')).toHaveClass(/recording/);
-    await page.mouse.up();
-    await expect(page.locator('#web-chat-dialog')).toBeVisible();
-    assert.deepEqual(await page.evaluate(()=>window.__voiceCalls), [['hold','phone'],['release']]);
-    await page.evaluate(() => Object.assign(window.__askUI, window.__voiceOriginal));
-    } else await page.locator('#web-chat').click();
-    await page.locator('#ask-question').focus();
-    await page.evaluate(() => {
-      Object.defineProperty(window, 'visualViewport', { configurable: true, value: Object.assign(new EventTarget(), { height: 400, width: innerWidth, offsetTop: 0, offsetLeft: 0, scale: 1 }) });
-      window.dispatchEvent(new Event('resize'));
-    });
-    const form = await page.locator('#ask-form').boundingBox(); assert.ok(form.y+form.height <= 401, JSON.stringify(form));
-    await page.screenshot({path:`test-results/web-reader/${engine.name()}-${viewport.width}-keyboard.png`});
+    await page.keyboard.press('Escape');
+    await page.locator('#ask-open').click();
+    await page.getByRole('button',{name:/^Go to the passage/}).first().click();
+    await expect.poll(async()=>Number(await page.locator('#position').inputValue())).toBeGreaterThan(0);
+    if (!built) assert.equal(await page.evaluate(async()=>{const {pdfAnchor}=await import('/src/pdf-layout.js'); const {layout,y}=window.__askUI.snapshot(); return pdfAnchor(layout,y).pdf.page;}),2);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+    if (viewport.width === 1440 && engine === chromium) {
+      await page.evaluate(() => { document.documentElement.requestFullscreen = window.__nativeFullscreen; });
+      await page.locator('#preview-fullscreen').click();
+      await expect.poll(() => page.evaluate(() => document.fullscreenElement === document.documentElement)).toBe(true);
+      await page.evaluate(() => document.exitFullscreen());
+      await expect(page.locator('.reader-fullscreen')).toHaveCount(0);
+      assert.equal(await page.locator('.app').evaluate(el=>el.inert),false);
+    }
     assert.deepEqual(errors,[]);
     results.push({browser:engine.name(),width:viewport.width,passed:true});
-   } catch(error) { await page.screenshot({path:`test-results/web-reader/${engine.name()}-${viewport.width}-failure.png`}); console.error({errors, pdfSteps: await page.evaluate(()=>window.__pdfSteps), text: (await page.locator('body').innerText()).slice(-1600)}); throw error; }
+   } catch(error) { await page.screenshot({path:`test-results/web-reader/${engine.name()}-${viewport.width}-failure.png`}); console.error({errors,state:!built ? await page.evaluate(()=>{const a=window.__askUI,s=a.snapshot();return {y:s.y,paperKey:a.paperKey,turns:a.chat.turns(a.paperKey),page2:s.layout?.blocks.filter(b=>b.page===2).slice(0,1)}}) : null,text:(await page.locator('body').innerText()).slice(-1000)}); throw error; }
    finally { await page.close(); turns=turns.slice(0,1); busy=false; prompts=[]; messages=[]; }
   }} finally { await browser.close(); }
  }

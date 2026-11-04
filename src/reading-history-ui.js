@@ -1,6 +1,6 @@
 import { readingDay } from './reading-activity.js';
 import { groupReadingEntries, readingGroupLocation } from './reading-history-groups.js';
-import { safeMarkdown } from './web-reading.js';
+import { safeMarkdown } from './safe-markdown.js';
 import { marked } from 'marked';
 import './reading-history.css';
 

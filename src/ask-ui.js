@@ -751,7 +751,7 @@ export class AskUI {
     }
     this.session.close();
   }
-  handle(action) {
+  handle(action, microphoneSource) {
     if (this.session.dialog() && ['previous', 'next', 'previous-page', 'next-page'].includes(action)) {
       this.session.move(action.startsWith('next') ? 1 : -1); return true;
     }
@@ -765,7 +765,7 @@ export class AskUI {
       if (action === 'ask-toggle') return true;
     }
     if (action === 'ask-cancel') { this.close(); return true; }
-    if (action === 'ask-hold') { this.hold(); return true; }
+    if (action === 'ask-hold') { this.hold(microphoneSource); return true; }
     if (action === 'ask-release') { this.release(); return true; }
     if (action === 'ask') { this.open(); return true; }
     if (action === 'ask-toggle') { this.toggleConversation(); return true; }

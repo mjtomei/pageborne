@@ -31,6 +31,8 @@ jobs:
           node scripts/desktop-ocr-browser-test.mjs
           PAGE_TIME_BROWSER=chromium npm run test:page-time
           npm run test:reading-history
+          WEB_BROWSER=chromium npm run test:web
+          WEB_BROWSER=chromium WEB_BUILT=1 npm run test:web
           npm run test:pdf-centering
           npm run test:pdf-decoders
           npm run test:contents
