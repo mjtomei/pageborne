@@ -8,12 +8,14 @@ import { displayProbe } from './display-probe.mjs';
 import { showLibrary } from './ui-helpers.mjs';
 
 const out = 'test-results/librarian'; await mkdir(out, { recursive: true });
-const vite = await createServer({ plugins: [displayProbe()], cacheDir: '.state/vite-librarian',
-  server: { host: '127.0.0.1', port: 0, watch: { usePolling: true } }, clearScreen: false });
+const vite = await createServer({ mode: 'release', plugins: [displayProbe(), { name: 'librarian-speech-fixture', transform(code, id) {
+  if (id.endsWith('/src/speech-setup.js')) return code.replace('start(initialize) {', 'start(initialize) { this.blocked = false; return Promise.resolve();');
+} }], cacheDir: '.state/vite-librarian',
+  server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, clearScreen: false });
 await vite.listen();
 const reports = [];
 try {
-  for (const engine of [chromium, webkit]) {
+  for (const engine of process.env.LIBRARIAN_BROWSER === 'chromium' ? [chromium] : [chromium, webkit]) {
     const browser = await engine.launch({ headless: true, executablePath: engine === chromium ? '/usr/bin/google-chrome' : process.env.WEBKIT_PATH });
     const report = { engine: engine.name(), passed: false, physicalGlasses: false, errors: [] }; reports.push(report);
     let page;
@@ -96,7 +98,7 @@ try {
       const paperId = await page.evaluate(() => window.__askUI.binding().sessionId);
       assert.notEqual(paperId, librarianId);
       await gesture('back');
-      await gesture('documents'); await gesture('previous'); await gesture('play');
+      await gesture('documents'); await gesture('previous'); await gesture('previous'); await gesture('play');
       await expect(page.locator('.ask-title-label')).toHaveText('Librarian');
       await expect(page.locator('#ask-history')).toContainText('What can you help me find?');
       await expect(page.locator('#ask-history')).not.toContainText('Explain the passage.');

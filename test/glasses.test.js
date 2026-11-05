@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { GlassesDisplay, pageDefinition, pdfPageDefinition, modePageDefinition, MODE_POPUP, readingTimeText, statusText, footerTextObjects, bodyText, documentPageText, reviewPageDefinition } from '../src/glasses.js';
 import { nativeLayout, LINE_HEIGHT } from '../src/native-text.js';
 import { parseDocument } from '../src/document.js';
+import { TERMINAL_SESSIONS_ID } from '../src/terminal-sessions.js';
 import { openDocumentPicker, moveDocumentPicker, documentPickerText, LIBRARIAN_ID } from '../src/document-picker.js';
 import { byteLength, VISIBLE_LINES } from '../src/native-text.js';
 import { getTextWidth } from '@evenrealities/pretext';
@@ -275,10 +276,10 @@ test('mode popup masks only its rectangle in PDF transfers and restores the cach
 test('document picker reaches all saved files and Back with bounded native text', () => {
   const documents = Array.from({ length: 1000 }, (_, i) => ({ id: `${i}.md`, title: '中文👓'.repeat(500) }));
   let picker = openDocumentPicker(documents, '950.md');
-  assert.equal(picker.index, 952);
+  assert.equal(picker.index, 953);
   assert.ok(documentPickerText(picker).includes('> 950.md'), 'duplicate titles show distinct filenames');
   const seen = new Set();
-  for (let i = 0; i < documents.length + 2; i++) {
+  for (let i = 0; i < documents.length + 3; i++) {
     seen.add(picker.items[picker.index].id);
     const text = documentPickerText(picker);
     assert.ok(byteLength(text) < 900);
@@ -286,15 +287,15 @@ test('document picker reaches all saved files and Back with bounded native text'
     assert.ok(text.split('\n').some(line => line.startsWith('> ')));
     picker = moveDocumentPicker(picker, 1);
   }
-  assert.equal(seen.size, 1002);
-  assert.equal(picker.index, 952);
+  assert.equal(seen.size, 1003);
+  assert.equal(picker.index, 953);
   picker = openDocumentPicker(documents, '0.md');
   assert.equal(moveDocumentPicker(picker, -1).items[0].id, null);
   picker = openDocumentPicker([]);
   assert.equal(picker.index, 0);
-  assert.equal(moveDocumentPicker(picker, -1).index, 0);
+  assert.equal(moveDocumentPicker(picker, -1).index, 1);
   assert.match(documentPickerText(picker), /Add files on phone/);
-  assert.equal(picker.items.length, 1, 'an empty library still offers Librarian');
+  assert.equal(picker.items.length, 2, 'an empty library offers Librarian and desktop sessions');
   assert.equal(picker.items[0].id, LIBRARIAN_ID);
   assert.match(documentPickerText(picker), /> Librarian/);
 });
@@ -303,9 +304,11 @@ test('root document picker starts on a file, wraps, and can highlight the docume
   const docs = [{ id: 'a.md', title: 'A' }, { id: 'b.pdf', title: 'B' }];
   const first = openDocumentPicker(docs);
   assert.equal(first.canReturn, false);
-  assert.match(documentPickerText(first), /Choose document \(1\/2\)\n  Librarian\n> A/);
+  assert.match(documentPickerText(first), /Choose document \(1\/2\)\n  Librarian\n  Even Terminal sessions\n> A/);
   assert.doesNotMatch(documentPickerText(first), /Back to reading/);
-  const librarian = moveDocumentPicker(first, -1);
+  const terminal = moveDocumentPicker(first, -1);
+  assert.equal(terminal.items[terminal.index].id, TERMINAL_SESSIONS_ID);
+  const librarian = moveDocumentPicker(terminal, -1);
   assert.equal(librarian.items[librarian.index].id, LIBRARIAN_ID);
   assert.match(documentPickerText(librarian), /Ask the librarian/);
   const wrapped = moveDocumentPicker(librarian, -1);

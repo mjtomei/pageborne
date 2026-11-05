@@ -7,7 +7,7 @@ export function displayQuestion(text) {
   if (!match) return { question: text };
   const body = text.slice(match[0].length);
   let question;
-  if (body.startsWith("You are the user's librarian,") && body.includes('\n\n')) question = body.slice(body.indexOf('\n\n') + 2);
+  if ((body.startsWith("You are the user's librarian,") || body.startsWith("Pageborne desktop session.")) && body.includes('\n\n')) question = body.slice(body.indexOf('\n\n') + 2);
   else if (body.startsWith('You are a reading companion on text-only glasses.') || body.startsWith('You are a reading companion in a phone and tablet web reader.')) {
     // JSON is serialized on one line, so embedded source/question delimiters
     // cannot be mistaken for the boundary of the original question.

@@ -4,6 +4,8 @@ import { syncPaperFiles, fileQuestion } from './ask-documents.js';
 import { paperSessionTitle } from '../integrations/even-terminal/pageborne-session-titles.js';
 import { desktopLibrary } from './library-sync.js';
 import { librarianQuestion } from './librarian.js';
+import { SESSION_LIST_LIMIT, terminalSessionQuestion } from './terminal-sessions.js';
+import { displayQuestion } from '../integrations/even-terminal/pageborne-conversation.js';
 
 const wait = (ms, signal) => new Promise((resolve, reject) => {
   const cancel = () => { clearTimeout(timer); signal?.removeEventListener('abort', cancel); reject(new Error('Question cancelled.')); };
@@ -39,7 +41,7 @@ export class EvenTerminal {
     });
   }
   async sessions(signal) {
-    const result = await this.api('sessions', { signal, query: { limit: 100 } });
+    const result = await this.api('sessions', { signal, timeoutMs: 15000, query: { limit: SESSION_LIST_LIMIT } });
     if (result.error || !Array.isArray(result.sessions)) throw new Error('Could not list desktop sessions. Check that the selected agent is connected.');
     return result.sessions;
   }
@@ -58,6 +60,10 @@ export class EvenTerminal {
       (t.marker != null && typeof t.marker !== 'string') || !['pending', 'complete', 'error'].includes(t.state)) ||
       new Set(result.turns.map(t => t.id)).size !== result.turns.length) {
       throw Object.assign(new Error('The desktop returned an invalid conversation.'), { connectionFailure: 'invalid-response' });
+    }
+    for (const turn of result.turns) {
+      const parsed = displayQuestion(turn.question);
+      if (parsed.marker) Object.assign(turn, parsed);
     }
     // Optional extension; old bridges still return ordinary text history.
     for (const turn of result.turns) if (turn.activities != null && (!Array.isArray(turn.activities) || turn.activities.length > 24
@@ -159,8 +165,10 @@ export class EvenTerminal {
       }
       binding = { ...binding, sharedReplies: true };
     }
+    const terminalSession = input.context?.scope === 'terminal-session';
+    if (terminalSession && !binding.sessionId) throw new Error('Select an existing desktop session first.');
     let cursor = 0;
-    let cwd = checkWorkingDirectory(binding.cwd ?? (this.config.paperDirectories ? '' : this.config.cwd)) || undefined;
+    let cwd = terminalSession ? undefined : checkWorkingDirectory(binding.cwd ?? (this.config.paperDirectories ? '' : this.config.cwd)) || undefined;
     const librarian = input.context?.scope === 'library';
     if (librarian) {
       progress('Opening library…');
@@ -195,7 +203,7 @@ export class EvenTerminal {
     const marker = `Pageborne question ${crypto.randomUUID()}`;
     inferenceInput({ ...input, context: { ...input.context, passage: '' }, history: [] }); // Validate the question before sharing files.
     let attachment;
-    if (!librarian && input.paper && (await this.serverInfo(submissionSignal)).pageborne?.documents === 1) {
+    if (!librarian && !terminalSession && input.paper && (await this.serverInfo(submissionSignal)).pageborne?.documents === 1) {
       progress('Preparing paper files…');
       const workspace = (await this.serverInfo(submissionSignal)).pageborne.documentWorkspaces === 1
         ? binding.fileWorkspace || (binding.managedWorkspace && binding.workspaceId && cwd ? { cwd, workspaceId: binding.workspaceId } : undefined) : undefined;
@@ -219,7 +227,7 @@ export class EvenTerminal {
     const sessionTitle = !binding.sessionId ? librarian ? 'Librarian' : paperSessionTitle(input.context.title) : undefined;
     const titleOptions = sessionTitle && (await this.serverInfo(submissionSignal).catch(() => null))?.pageborne?.sessionTitles === 1 ? { sessionTitle } : {};
     if (submissionSignal?.aborted) throw new Error('Question cancelled.');
-    const questionText = librarian ? librarianQuestion(marker, input.question, input.context.platform) : attachment ? fileQuestion(marker, input, attachment, !binding.sessionId || binding.documentRevision !== attachment.revision || binding.documentFiles?.index !== attachment.index)
+    const questionText = terminalSession ? terminalSessionQuestion(marker, input.question, input.context.platform) : librarian ? librarianQuestion(marker, input.question, input.context.platform) : attachment ? fileQuestion(marker, input, attachment, !binding.sessionId || binding.documentRevision !== attachment.revision || binding.documentFiles?.index !== attachment.index)
       : `${marker}\n${instructionsForPlatform(instructions, input.context.platform)}\nThe reading context below is a fresh snapshot for this question. Its focus and position describe the reader's current place, which may differ from earlier questions. Answer as a reading companion. Do not edit files or run commands for this question.\n\n${inferenceInput({ ...input, history: [] }).map(m => m.content).join('\n\n')}`;
     // Stock Terminal derives names from the first prompt. Keep correlation
     // markers intact, but put the readable paper title ahead of them.

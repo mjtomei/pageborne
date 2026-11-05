@@ -33,6 +33,8 @@ jobs:
           PAGE_TIME_BROWSER=chromium npm run test:page-time
           npm run test:display-recovery
           npm run test:sdk-timers
+          npm run test:terminal-sessions
+          LIBRARIAN_BROWSER=chromium npm run test:librarian
           npm run test:reading-history
           READING_BROWSER=chromium npm run test:reading-controls
           WEB_BROWSER=chromium npm run test:web

@@ -104,6 +104,7 @@ function footerColumns(frame) {
   if (frameDialog(frame)) return null;
   if (frame.positionPicker?.kind === 'contents') return actionFooter('Swipe: section', 'Tap: read · Double tap: back', ['Swipe: section']);
   if (frame.positionPicker) return actionFooter(`Swipe ${frame.positionPicker.step || 5}%`, `Hold: ${frame.positionPicker.step === 1 ? 5 : 1}% · Tap to read`, [`Swipe ${frame.positionPicker.step || 5}%`]);
+  if (frame.picker?.kind === 'terminal-sessions') return actionFooter('Swipe: session', 'Tap: open · Hold: refresh', ['Swipe: session']);
   if (frame.picker) {
     const { items, syncEnabled, syncing, syncStatus } = frame.picker;
     const actions = [items.length && 'Tap to open', syncEnabled && !syncing && 'Hold to sync'].filter(Boolean).join(' · ');

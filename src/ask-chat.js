@@ -6,7 +6,7 @@ const MAX_TURNS = 40, MAX_CHARACTERS = 100000, MAX_PAPERS = 20;
 function paperGroup(key) {
   try {
     const parts = JSON.parse(key);
-    if (Array.isArray(parts) && parts.length >= 5) return JSON.stringify([parts[0], parts[5] || 'document']);
+    if (Array.isArray(parts) && parts.length >= 5) return JSON.stringify([parts[0], parts[5] || 'document', ...(parts[5] === 'terminal-session' ? [parts[2], parts[3], parts[6]] : [])]);
   } catch {}
   return key;
 }

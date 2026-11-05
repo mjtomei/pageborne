@@ -8,6 +8,7 @@ import { readQrImage, QrImageError } from './qr-image.js';
 import { AskChat } from './ask-chat.js';
 import { chatMessages } from './ask-activity.js';
 import { librarianContext } from './librarian.js';
+import { terminalSessionKey, terminalSessionContext } from './terminal-sessions.js';
 import { paperAttachments } from './ask-documents.js';
 import { renderSpeechConfidence, uncertainWords } from './speech-confidence.js';
 import { SpeechUI } from './speech-ui.js';
@@ -21,8 +22,8 @@ import { safeTimeout as setTimeout, cancelTimeout as clearTimeout } from './time
 
 const $ = id => document.getElementById(id);
 export class AskUI {
-  constructor({ pdfProcessing = () => false, goToPosition = () => {}, snapshot, pause, changed, presentVoiceOverlay = () => {}, returnToLibrary = () => {}, onLibraryFile = () => {}, readConfig, saveConfig, readModels = () => ({}), saveModels = () => {}, readBindings, saveBindings, readChats, saveChats, reveal, paperIdentity, audioControl, showSettings, captureQrImage, automaticConnection = false, readSpeech, saveSpeech, readVocabulary, saveVocabulary, readContextVocabulary, saveContextVocabulary, diagnostics }) {
-    Object.assign(this, { pdfProcessing, goToPosition, snapshot, pause, changed, presentVoiceOverlay, returnToLibrary, onLibraryFile, readConfig, saveConfig, readModels, saveModels, readBindings, saveBindings, paperIdentity, showSettings, captureQrImage, automaticConnection, diagnostics });
+  constructor({ pdfProcessing = () => false, goToPosition = () => {}, snapshot, pause, changed, presentVoiceOverlay = () => {}, returnToLibrary = () => {}, returnToSessions = () => {}, onLibraryFile = () => {}, readConfig, saveConfig, readModels = () => ({}), saveModels = () => {}, readBindings, saveBindings, readChats, saveChats, reveal, paperIdentity, audioControl, showSettings, captureQrImage, automaticConnection = false, readSpeech, saveSpeech, readVocabulary, saveVocabulary, readContextVocabulary, saveContextVocabulary, diagnostics }) {
+    Object.assign(this, { pdfProcessing, goToPosition, snapshot, pause, changed, presentVoiceOverlay, returnToLibrary, returnToSessions, onLibraryFile, readConfig, saveConfig, readModels, saveModels, readBindings, saveBindings, paperIdentity, showSettings, captureQrImage, automaticConnection, diagnostics });
     this.glassesVisible = false; this.phoneVisible = false; this.replyUnread = false;
     this.chat = new AskChat(readChats, saveChats); this.reveal = reveal;
     this.deliveries = new Map();
@@ -204,7 +205,7 @@ export class AskUI {
     this.saveModels({ ...this.readModels(), selections: { ...this.readModels().selections, [askScopeKey(paperId)]: agent } });
   }
   switchModel(agent) {
-    if (!this.session.active || connectionMode(this.config) !== 'terminal' || !ASK_AGENTS.includes(agent) || this.config.agent === agent) return;
+    if (!this.session.active || this.terminalSession || connectionMode(this.config) !== 'terminal' || !ASK_AGENTS.includes(agent) || this.config.agent === agent) return;
     // Finish reviewing a recording before switching. In-flight desktop
     // deliveries, however, keep running under their original model's key.
     if (this.session.dialog()) { this.render(); return; }
@@ -216,6 +217,15 @@ export class AskUI {
     this.open({ scope, showConversation });
     this.reveal();
   }
+  get terminalSession() { return this.session.context?.scope === 'terminal-session'; }
+  openTerminalSession(session) {
+    if (this.unavailableReason || this.speech.setup.blocked || connectionMode(this.readConfig()) !== 'terminal') return false;
+    if (!session?.id || !ASK_AGENTS.includes(session.provider)) return false;
+    this.close();
+    const opened = this.open({ scope: 'terminal-session', desktopSession: session });
+    if (opened) this.reveal();
+    return opened;
+  }
   get librarian() { return this.session.context?.scope === 'library'; }
   openLibrarian() {
     if (this.unavailableReason || this.speech.setup.blocked) return false;
@@ -224,7 +234,7 @@ export class AskUI {
     if (opened) this.reveal();
     return opened;
   }
-  open({ showConversation = true, dictation = false, scope = 'document' } = {}) {
+  open({ showConversation = true, dictation = false, scope = 'document', desktopSession } = {}) {
     if (this.unavailableReason || this.speech.setup.blocked) return false;
     const revealUnread = showConversation && !this.glassesVisible;
     this.phoneVisible = true;
@@ -234,17 +244,23 @@ export class AskUI {
       if (showConversation) { this.pause(); this.acknowledgeReply(); } this.render(); this.changed(); void this.pollFooter(); return true;
     }
     const { layout, y, title, wordFrame, paperId } = this.snapshot();
-    if (!layout && scope !== 'library') { this.glassesVisible = this.phoneVisible = false; return false; }
+    const terminalSession = scope === 'terminal-session';
+    if (terminalSession && !desktopSession?.id) { this.glassesVisible = this.phoneVisible = false; return false; }
+    if (!layout && scope === 'document') { this.glassesVisible = this.phoneVisible = false; return false; }
     this.replyUnread = false;
-    this.retainModels(); this.paperId = scope === 'library' ? null : paperId;
-    this.config = structuredClone(this.configFor(this.paperId));
-    if (connectionMode(this.config) === 'terminal' && this.readModels().selections?.[askScopeKey(this.paperId)] !== this.config.agent) this.selectModel(this.config.agent, this.paperId);
-    this.paperKey = askChatKey(this.config, this.paperId);
+    this.retainModels(); this.paperId = scope === 'library' || terminalSession ? null : paperId;
+    this.config = structuredClone(terminalSession ? { ...this.readConfig(), agent: desktopSession.provider } : this.configFor(this.paperId));
+    if (!terminalSession && connectionMode(this.config) === 'terminal' && this.readModels().selections?.[askScopeKey(this.paperId)] !== this.config.agent) this.selectModel(this.config.agent, this.paperId);
+    this.paperKey = terminalSession ? terminalSessionKey(this.config, desktopSession.id) : askChatKey(this.config, this.paperId);
+    if (terminalSession) {
+      this.desktopSession = desktopSession;
+      this.saveBinding(this.paperKey, { ...this.binding(), sessionId: desktopSession.id, sessionTitle: desktopSession.title });
+    }
     this.turnId = this.chat.reconcile(this.paperKey, this.binding()) || this.chat.turns(this.paperKey).at(-1)?.id;
     this.chatFollowing = true; this.renderedChatKey = null;
     // Holding needs only the nearby passage. submit() gathers the fixed 100k-token
     // context at the current position; don't build/render 100k tokens to record.
-    const context = scope === 'library' ? librarianContext() : askContext(layout, y, title, wordFrame, dictation ? 1000 : undefined);
+    const context = terminalSession ? terminalSessionContext(desktopSession) : scope === 'library' ? librarianContext() : askContext(layout, y, title, wordFrame, dictation ? 1000 : undefined);
     if (this.binding().documentFiles) context.files = this.binding().documentFiles;
     if (showConversation) this.pause();
     this.session.open(context, this.chat.history(this.paperKey), this.chat.turns(this.paperKey));
@@ -291,6 +307,7 @@ export class AskUI {
     }
   }
   vocabularyContext() {
+    if (this.terminalSession) return { context: this.session.context, history: this.chat.vocabularyHistory(this.paperKey) };
     if (this.librarian) return { context: librarianContext(), history: this.chat.vocabularyHistory(this.paperKey) };
     const { layout, y, title, wordFrame, paperId } = this.snapshot();
     if (!layout) return {};
@@ -420,8 +437,8 @@ export class AskUI {
     if (this.librarian && connectionMode(this.config) !== 'terminal') { this.session.fail(new Error('Librarian needs an Even Terminal connection with library support. Set it up in Connection settings.')); return; }
     if (connectionMode(this.config) === 'terminal' && !this.setPaperDirectory()) return;
     const current = this.snapshot();
-    const librarian = this.librarian;
-    this.session.context = librarian ? librarianContext() : askContext(current.layout, current.y, current.title, current.wordFrame);
+    const librarian = this.librarian, terminalSession = this.terminalSession;
+    this.session.context = terminalSession ? terminalSessionContext(this.desktopSession) : librarian ? librarianContext() : askContext(current.layout, current.y, current.title, current.wordFrame);
     this.session.context.platform = current.platform || 'glasses';
     this.cancelSpeechCompletion();
     const turnId = this.turnId = this.chat.begin(this.paperKey, question, this.session.context);
@@ -451,7 +468,7 @@ export class AskUI {
       };
       delivery.submission = (previous?.submission || Promise.resolve()).catch(() => {}).then(() => {
         if (delivery.abort.signal.aborted) throw new Error('Question cancelled.');
-        return client.submit({ ...body, turnId, ...(librarian ? {} : { paper: () => paperAttachments(current), paperId: this.paperIdentity(current.paperId) }) }, this.readBindings()[key], save, delivery.abort.signal, update);
+        return client.submit({ ...body, turnId, ...(librarian || terminalSession ? {} : { paper: () => paperAttachments(current), paperId: this.paperIdentity(current.paperId) }) }, this.readBindings()[key], save, delivery.abort.signal, update);
       });
       try {
         const binding = await delivery.submission;
@@ -503,11 +520,11 @@ export class AskUI {
       else if (value.notification === 'error') this.session.fail(new Error('Submission could not be confirmed. Check the desktop session before asking again.'));
     }
   }
-  currentPaperKey() { if (this.session.active && (this.librarian || this.paperId === this.snapshot().paperId)) return this.paperKey; const id = this.snapshot().paperId; return id && connectionMode(this.readConfig()) === 'terminal' ? paperConnectionKey(this.configFor(id), id) : null; }
+  currentPaperKey() { if (this.session.active && (this.librarian || this.terminalSession || this.paperId === this.snapshot().paperId)) return this.paperKey; const id = this.snapshot().paperId; return id && connectionMode(this.readConfig()) === 'terminal' ? paperConnectionKey(this.configFor(id), id) : null; }
   footerStatus() {
     if (this.unavailableReason) return 'PDF processing';
     const key = this.currentPaperKey(); const binding = this.readBindings()[key];
-    if (this.session.active && (this.librarian || this.paperId === this.snapshot().paperId)) {
+    if (this.session.active && (this.librarian || this.terminalSession || this.paperId === this.snapshot().paperId)) {
       if (this.session.status === 'thinking') return this.session.progressText === 'Reconnecting…' ? 'Reconnecting…' : this.session.answer ? 'Reply in progress' : 'Thinking…';
       if (this.session.status === 'error' && (!binding?.pending || binding.notification === 'error')) return 'Ask failed';
       if (this.replyUnread && !binding?.pending) return 'Unread reply';
@@ -535,7 +552,7 @@ export class AskUI {
     for (const id of ['ask-open', 'ask-footer']) $(id).title = reason;
     $('ask-footer').disabled = !!reason;
     const status = this.footerStatus(); $('ask-footer').hidden = !status || !$('ask-panel').hidden;
-    const text = `${this.librarian ? 'Librarian' : 'Ask'} · ${status}`; if ($('ask-footer').textContent !== text) $('ask-footer').textContent = text;
+    const text = `${this.terminalSession ? 'Even Terminal' : this.librarian ? 'Librarian' : 'Ask'} · ${status}`; if ($('ask-footer').textContent !== text) $('ask-footer').textContent = text;
     $('ask-footer').dataset.ready = String(status === 'Unread reply');
     $('ask-footer').dataset.busy = String(['PDF processing', 'Thinking…', 'Reply in progress', 'Sharing paper…', 'Reply pending', 'Reconnecting…'].includes(status));
     const state = $('ask-footer').dataset.busy === 'true' ? 'busy' : status === 'Unread reply' ? 'unread'
@@ -649,6 +666,7 @@ export class AskUI {
     this.render(); this.scrollChat(); this.changed();
   }
   async listSessions() {
+    if (this.terminalSession) return;
     const key = this.paperKey; const generation = this.generation; $('ask-sessions-refresh').disabled = true;
     try {
       const sessions = await new EvenTerminal(this.config, this.options()).sessions();
@@ -658,10 +676,10 @@ export class AskUI {
     finally { $('ask-sessions-refresh').disabled = false; }
   }
   useSession() {
-    if (this.librarian) return;
+    if (this.librarian || this.terminalSession) return;
     if (this.session.abort || this.deliveries.has(this.paperKey) || this.session.dialog() || this.session.status === 'thinking') return;
     const id = $('ask-session-choice').value; if (!id) { $('ask-session-label').textContent = 'Choose a desktop session first.'; return; }
-    const sameConnection = key => { try { const [, mode, endpoint, agent] = JSON.parse(key); return mode === 'terminal' && endpoint === (this.config.chatScope || this.config.endpoint) && agent === this.config.agent; } catch { return false; } };
+    const sameConnection = key => { try { const [, mode, endpoint, agent, , scope] = JSON.parse(key); return scope !== 'terminal-session' && mode === 'terminal' && endpoint === (this.config.chatScope || this.config.endpoint) && agent === this.config.agent; } catch { return false; } };
     if (Object.entries(this.readBindings()).some(([key, b]) => key !== this.paperKey && sameConnection(key) && b.sessionId === id)) { $('ask-session-label').textContent = 'That session is linked to another paper. Choose a separate session.'; return; }
     this.linkVersions.set(this.paperKey, (this.linkVersions.get(this.paperKey) || 0) + 1);
     // Native desktop sessions may be started manually after Prepare folder.
@@ -673,6 +691,7 @@ export class AskUI {
     void this.pollFooter();
   }
   newSession() {
+    if (this.terminalSession) return;
     if (this.session.abort || this.deliveries.has(this.paperKey) || this.session.dialog() || this.session.status === 'thinking') return;
     this.linkVersions.set(this.paperKey, (this.linkVersions.get(this.paperKey) || 0) + 1);
     const cwd = this.librarian || this.binding().managedWorkspace ? undefined : this.binding().cwd;
@@ -685,7 +704,7 @@ export class AskUI {
     this.session.history = []; this.session.answer = this.session.displayAnswer = ''; this.session.syncConversation([]); this.session.y = 0;
   }
   setPaperDirectory() {
-    if (this.librarian || this.automaticConnection) return true;
+    if (this.librarian || this.terminalSession || this.automaticConnection) return true;
     if (this.binding().sessionId || this.binding().pending || this.session.status === 'thinking') return true;
     try {
       const cwd = checkWorkingDirectory($('ask-paper-cwd').value);
@@ -695,7 +714,7 @@ export class AskUI {
     } catch (error) { $('ask-paper-cwd').setCustomValidity(error.message); $('ask-paper-cwd').reportValidity(); $('ask-session-label').textContent = error.message; return false; }
   }
   async prepareWorkspace() {
-    if (this.librarian) return;
+    if (this.librarian || this.terminalSession) return;
     if (this.binding().sessionId || this.binding().pending || this.session.status === 'thinking') return;
     const key = this.paperKey; const generation = this.generation; const save = this.bindingWriter(key);
     let binding = this.binding(); const workspaceId = binding.workspaceId || crypto.randomUUID();
@@ -720,6 +739,7 @@ export class AskUI {
   }
   returnToReading() {
     if (!this.session.active) return;
+    if (this.terminalSession) { const session = this.desktopSession; this.close(); this.returnToSessions(session); return; }
     if (this.librarian) { this.close(); this.returnToLibrary(); return; }
     if (this.session.dialog()) { this.close(); return; }
     this.glassesVisible = this.phoneVisible = false;
@@ -808,22 +828,23 @@ export class AskUI {
     if (!s.active) return;
     this.resizeQuestion();
     const desktop = connectionMode(this.config) === 'terminal'; const binding = this.binding();
-    $('ask-chat-model-field').hidden = !desktop;
+    $('ask-chat-model-field').hidden = !desktop || this.terminalSession;
     $('ask-chat-model').value = this.config.agent || '';
-    $('ask-chat-model').disabled = !!s.dialog();
-    const librarian = this.librarian;
-    document.querySelector('.ask-title-label').textContent = librarian ? 'Librarian' : 'Ask';
-    $('ask-panel').setAttribute('aria-label', librarian ? 'Librarian' : 'Ask about this');
-    input.placeholder = librarian ? 'Ask your librarian…' : 'Ask about this paper…';
-    $('ask-paper-session').querySelector('summary').textContent = librarian ? 'Library session' : 'Session for this paper';
+    $('ask-chat-model').disabled = this.terminalSession || !!s.dialog();
+    const librarian = this.librarian, terminalSession = this.terminalSession;
+    document.querySelector('.ask-title-label').textContent = terminalSession ? 'Even Terminal' : librarian ? 'Librarian' : 'Ask';
+    $('ask-panel').setAttribute('aria-label', terminalSession ? 'Even Terminal session' : librarian ? 'Librarian' : 'Ask about this');
+    input.placeholder = terminalSession ? 'Continue this session…' : librarian ? 'Ask your librarian…' : 'Ask about this paper…';
+    $('ask-paper-session').querySelector('summary').textContent = terminalSession ? 'Desktop session' : librarian ? 'Library session' : 'Session for this paper';
     $('ask-session-new').textContent = librarian ? 'New Librarian session' : 'New session for this paper';
-    for (const id of ['ask-session-choice', 'ask-sessions-refresh', 'ask-session-use']) $(id).hidden = librarian;
-    $('ask-paper-directory-settings').hidden = librarian || this.automaticConnection;
-    $('ask-session-help').textContent = librarian ? 'A dedicated conversation in the shared library directory. New session keeps the old conversation on the desktop.' : 'Use a dedicated session for this paper. New session unlinks the current one; its desktop conversation is kept.';
-    $('ask-history-help').textContent = connectionMode(this.config) === 'terminal'
+    for (const id of ['ask-session-choice', 'ask-sessions-refresh', 'ask-session-use']) $(id).hidden = librarian || terminalSession;
+    $('ask-session-new').hidden = terminalSession;
+    $('ask-paper-directory-settings').hidden = librarian || terminalSession || this.automaticConnection;
+    $('ask-session-help').textContent = terminalSession ? 'Continues the existing desktop conversation with its own model, tools and permissions.' : librarian ? 'A dedicated conversation in the shared library directory. New session keeps the old conversation on the desktop.' : 'Use a dedicated session for this paper. New session unlinks the current one; its desktop conversation is kept.';
+    $('ask-history-help').textContent = terminalSession ? 'Recent messages sync with this desktop session. Each session keeps its own history and draft.' : connectionMode(this.config) === 'terminal'
       ? 'Each model keeps a separate conversation for this document or Librarian. Switching back restores its messages and desktop session. Recent messages sync with that session.'
       : 'Recent questions asked here are saved on this device, separately for each paper.';
-    $('ask-voice-help').textContent = librarian ? 'Hold on the glasses to speak, or tap the microphone. Release to review before sending. Swipe through replies; tap to return to the library. The librarian works in the shared desktop library. Sync the library to transfer file changes to your phone.' : this.documentVoiceHelp;
+    $('ask-voice-help').textContent = terminalSession ? 'Hold to speak. Release to review before sending. Swipe through replies; tap to return to sessions. Approvals stay on the desktop.' : librarian ? 'Hold on the glasses to speak, or tap the microphone. Release to review before sending. Swipe through replies; tap to return to the library. The librarian works in the shared desktop library. Sync the library to transfer file changes to your phone.' : this.documentVoiceHelp;
     $('ask-paper-session').hidden = !desktop;
     $('ask-session-label').textContent = binding.sessionId ? `${this.config.agent} · ${binding.sessionTitle || binding.sessionId}${binding.cwd ? `\nRequested directory: ${binding.cwd}` : ''}${binding.pending ? ' · Reply pending' : ''}` : binding.pending ? 'Submission uncertain. Check the desktop, then choose its session before asking again.' : librarian ? 'Your Librarian conversation starts in the shared desktop library with your first question.' : `${this.config.agent || 'Desktop'} · A separate conversation for this paper starts with your first question when supported by the desktop. You can also select an existing session.`;
     $('ask-workspace').hidden = !this.config.paperDirectories;
@@ -834,13 +855,13 @@ export class AskUI {
     $('ask-check-reply').hidden = !desktop || !(binding.pending || binding.reply?.unread); $('ask-check-reply').disabled = s.status === 'thinking';
     $('ask-check-reply').textContent = binding.reply?.unread ? 'Read reply' : 'Check reply';
     $('ask-session-use').disabled = $('ask-session-new').disabled = !!s.abort || this.deliveries.has(this.paperKey) || !!s.dialog() || s.status === 'thinking';
-    $('ask-context').textContent = librarian ? 'Shared library' : `${s.savedReply ? 'Desktop reply · Current reading place: ' : ''}${s.context.title}${s.context.page ? ` · PDF page ${s.context.page}` : ''} · ${s.context.position}%${s.context.image ? ' · Text around this image; the image itself is not sent' : ''}`;
+    $('ask-context').textContent = terminalSession ? `${this.config.agent === 'claude' ? 'Claude' : 'Codex'} · ${s.context.title}` : librarian ? 'Shared library' : `${s.savedReply ? 'Desktop reply · Current reading place: ' : ''}${s.context.title}${s.context.page ? ` · PDF page ${s.context.page}` : ''} · ${s.context.position}%${s.context.image ? ' · Text around this image; the image itself is not sent' : ''}`;
     if (this.renderedContext !== s.context || this.renderedFiles !== s.context.files || librarian && this.renderedLibraryDirectory !== binding.cwd) {
       this.renderedContext = s.context; this.renderedFiles = s.context.files; this.renderedLibraryDirectory = binding.cwd;
-      $('ask-source-label').textContent = librarian ? 'Desktop library' : s.context.files ? 'Paper files and current position' : 'Passage included when you ask';
-      $('ask-passage').textContent = librarian ? binding.cwd || 'Uses the same root directory as library sync. No document needs to be open.' : s.context.files ? s.context.files.files.map(file => `${file.name}: ${file.path}`).join('\n')
+      $('ask-source-label').textContent = terminalSession ? 'Existing desktop conversation' : librarian ? 'Desktop library' : s.context.files ? 'Paper files and current position' : 'Passage included when you ask';
+      $('ask-passage').textContent = terminalSession ? 'Messages go to this session. The open document is not included.' : librarian ? binding.cwd || 'Uses the same root directory as library sync. No document needs to be open.' : s.context.files ? s.context.files.files.map(file => `${file.name}: ${file.path}`).join('\n')
         + '\n\nCurrent position:\n' + JSON.stringify(s.context.files.position, null, 2) : s.context.passage;
-      $('ask-context-size').textContent = librarian ? '' : s.context.files ? `· on desktop${s.context.partial ? ' · partial reflow; original complete' : ''}`
+      $('ask-context-size').textContent = librarian || terminalSession ? '' : s.context.files ? `· on desktop${s.context.partial ? ' · partial reflow; original complete' : ''}`
         : `· ~${(s.context.estimatedTokens || 0).toLocaleString()} tokens${s.context.partial ? ' · prepared text only' : ''}`;
     }
     $('ask-status').textContent = ({ ready: '', starting: 'Starting microphone…', listening: 'Listening…', transcribing: s.voiceProgress || 'Transcribing…', review: s.review?.refining ? 'Refining…' : '', thinking: s.progressText || 'Thinking…', answer: '', error: s.error })[s.status];

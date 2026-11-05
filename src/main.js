@@ -12,7 +12,8 @@ import { pdfAnnotationItems } from './pdf-captions.js';
 import { pdfAnchor, restorePdfAnchor, pdfPageTurn, PDF_WIDTH } from './pdf-layout.js';
 import { pdfReadingViews, nearbyPdfNote } from './pdf-notes.js';
 import { pdfNativeWindow, pdfImageEnd, PdfAutoscroll, pdfEntryLines } from './pdf-native.js';
-import { openDocumentPicker, moveDocumentPicker, LIBRARIAN_ID } from './document-picker.js';
+import { openDocumentPicker, moveDocumentPicker, documentPickerText, LIBRARIAN_ID } from './document-picker.js';
+import { TERMINAL_SESSIONS_ID, listTerminalSessions, terminalSessionPicker, sessionIdentity } from './terminal-sessions.js';
 import { librarySort, orderedDocuments, recordDocumentOpen } from './library-order.js';
 import { openNavigationPicker, refreshNavigationPicker, movePositionPicker, togglePositionStep } from './position-picker.js';
 import { documentContents } from './document-contents.js';
@@ -182,6 +183,7 @@ askUI = new AskUI({
   diagnostics,
   snapshot: () => ({ document: active, bodyLayout: layout, notes: pdfNotes, layout: footnotesView?.layout || layout, y: footnotesView?.y ?? reader.y, title: active?.title, paperId: documentKey(), platform: WEB ? 'web' : 'glasses', wordFrame: reader.mode === 'speed' ? reader.speedReading.current : null }),
   pause: () => { useReadyPdfPages(); reader.pause(); picker = null; positionPicker = null; modePicker = null; previewMenu = null; }, changed: () => { dirty = true; },
+  returnToSessions: session => { void openTerminalSessions(sessionIdentity(session)); },
   returnToLibrary: () => { picker = openDocumentPicker(libraryDocuments(), active?.id, LIBRARIAN_ID); setLibraryOpen(true, false); dirty = true; renderControls(); },
   presentVoiceOverlay: () => { dirty = true; animate(performance.now(), true); if (!WEB) return glasses.queue?.whenIdle(); },
   automaticConnection: !!automaticTerminal || WEB,
@@ -328,6 +330,28 @@ function handleAction(action, gesture = false, source) {
     // Foreground notifications from the OS menu must not dismiss its selector.
     if (!['suspend', 'resume'].includes(action)) { modePicker = null; dirty = true; }
   }
+  if (picker?.kind === 'terminal-sessions') {
+    if (['previous', 'next', 'previous-page', 'next-page'].includes(action)) {
+      picker = moveDocumentPicker(picker, action.startsWith('next') ? 1 : -1); dirty = true; return;
+    }
+    if (action === 'back' || action === 'documents') { returnFromTerminalSessions(); return; }
+    if (action === 'ask-hold') { librarySyncHold = true; void openTerminalSessions(picker.items[picker.index]?.id); return; }
+    if (action === 'play') {
+      const item = picker.items[picker.index];
+      if (item.action === 'back') returnFromTerminalSessions();
+      else if (item.action === 'refresh') void openTerminalSessions();
+      else if (item.session) {
+        if (terminalCatalogScope !== terminalConnectionIdentity()) { void openTerminalSessions(); return; }
+        if (!askUI.openTerminalSession(item.session)) {
+          picker.status = askUI.unavailableReason || 'Connect Even Terminal in phone Settings.'; dirty = true;
+        } else terminalListRequest?.abort();
+      }
+      return;
+    }
+    // A session list has no recording target until an owner is selected.
+    if (['ask-release', 'ask-cancel'].includes(action)) { librarySyncHold = false; return; }
+    if (['ask', 'ask-toggle'].includes(action)) return;
+  }
   if (action === 'ask-hold' && picker) { librarySyncHold = true; startLibrarySync(); return; }
   if (librarySyncHold && ['ask-release', 'ask-cancel'].includes(action)) { librarySyncHold = false; return; }
   if (action === 'ask-hold' && positionPicker) {
@@ -386,6 +410,7 @@ function handleAction(action, gesture = false, source) {
     if (action === 'play') {
       const id = picker.items[picker.index]?.id;
       if (id === LIBRARIAN_ID) { openLibrarian(); return; }
+      if (id === TERMINAL_SESSIONS_ID) { void openTerminalSessions(); return; }
       if (!id && !picker.canReturn) return;
       picker = null;
       if (id) { selectDocument(id); setLibraryOpen(false, false); }
@@ -434,6 +459,7 @@ function updatePickerContext() {
 
 function libraryDocuments() { return orderedDocuments(snapshot?.documents, preferences); }
 function refreshDocumentPicker() {
+  if (picker?.kind === 'terminal-sessions') return;
   if (!picker && active) return;
   picker = openDocumentPicker(libraryDocuments(), active?.id, picker?.items[picker.index]?.id);
   dirty = true; lastSentKey = '';
@@ -577,6 +603,41 @@ function setSettingsOpen(open, focus = true, trigger = $('settings-toggle')) {
 $('settings-toggle').onclick = () => setSettingsOpen($('shared-settings').hidden);
 $('reader-settings-toggle').onclick = () => setSettingsOpen($('shared-settings').hidden, true, $('reader-settings-toggle'));
 $('settings-done').onclick = () => setSettingsOpen(false);
+let terminalCatalog = [], terminalCatalogScope = '', terminalListRequest;
+const terminalConnectionIdentity = () => {
+  const config = readerConnection();
+  return JSON.stringify([config.endpoint, config.chatScope, config.token]);
+};
+function returnFromTerminalSessions() {
+  terminalListRequest?.abort(); terminalListRequest = null;
+  picker = openDocumentPicker(libraryDocuments(), active?.id, TERMINAL_SESSIONS_ID);
+  dirty = true; renderControls();
+}
+async function openTerminalSessions(selected) {
+  if (!libraryReady || askUI.speech.setup.blocked) return;
+  terminalListRequest?.abort();
+  const request = new AbortController(); terminalListRequest = request;
+  const connection = terminalConnectionIdentity();
+  if (terminalCatalogScope !== connection) { terminalCatalog = []; terminalCatalogScope = connection; }
+  reader.pause(); askUI.close(); positionPicker = null; modePicker = null;
+  setLibraryOpen(false, false);
+  picker = { ...terminalSessionPicker(terminalCatalog, selected, 'Loading sessions…'), request };
+  dirty = true; renderControls();
+  try {
+    const config = readerConnection();
+    if (connectionMode(config) !== 'terminal' || !config.endpoint) throw new Error('connection');
+    const result = await listTerminalSessions(provider => new EvenTerminal({ ...config, agent: provider }, askUI.options()), request.signal);
+    if (picker?.request !== request) return;
+    if (terminalConnectionIdentity() !== connection) {
+      picker = { ...terminalSessionPicker([], 'refresh', 'Connection changed. Tap Refresh to reload.'), request }; return;
+    }
+    const highlighted = picker.items[picker.index]?.id || picker.items[picker.index]?.action;
+    terminalCatalog = result.sessions;
+    picker = { ...terminalSessionPicker(terminalCatalog, highlighted, result.warnings.join(' · ')), request };
+  } catch {
+    if (picker?.request === request) picker = { ...picker, status: 'Check desktop connection. Tap Refresh to retry.' };
+  } finally { if (picker?.request === request) { dirty = true; renderControls(); } }
+}
 function openLibrarian() {
   if (!libraryReady || askUI.speech.setup.blocked) return;
   setLibraryOpen(false, false);
@@ -827,7 +888,7 @@ function renderPassage() {
 function renderControls() {
   const micAvailable = !!navigator.mediaDevices?.getUserMedia && !!globalThis.AudioWorkletNode;
   $('preview-speak').hidden = !micAvailable;
-  $('preview-speak').disabled = !libraryReady || !active || pdfPreparations.size > 0 || !!askUI.speech.setup.blocked;
+  $('preview-speak').disabled = !libraryReady || (!active && !askUI.session.active) || pdfPreparations.size > 0 || !!askUI.speech.setup.blocked;
   $('preview-speak').textContent = pdfPreparations.size ? 'PDF loading' : ['starting', 'listening'].includes(askUI.session.status) ? 'Release to review' : 'Hold to talk';
 
   const pdf = active?.format === 'pdf';
@@ -861,7 +922,7 @@ function renderControls() {
   $('speed-value').title = speedMode ? 'Enter words per minute' : 'Enter an autoscroll rate';
   $('play').textContent = positionPicker ? 'Read from here' : reader.mode === 'page' ? 'Next page' : reader.playing ? 'Pause'
     : speedMode ? reader.speedReading.finished ? 'Restart' : reader.wordStop ? 'Continue' : 'Start speed reading' : 'Start autoscroll';
-  $('preview').setAttribute('aria-label', picker ? `Choose document: ${picker.items[picker.index]?.title || 'No saved documents'}`
+  $('preview').setAttribute('aria-label', picker ? `${picker.kind === 'terminal-sessions' ? 'Even Terminal sessions' : 'Choose document'}: ${picker.items[picker.index]?.title || 'No saved documents'}`
     : positionPicker ? positionPicker.kind === 'contents' ? `Contents: ${positionPicker.entries[positionPicker.index].title}` : `Choose reading position: ${positionPicker.percent}%`
     : active ? `Glasses preview: ${active.title}` : 'Choose a document to preview it on your glasses');
   if (speedMode) $('auto-note').textContent = `Centered word groups. Titles ${reader.pauseAtTitles ? 'wait for a tap' : 'show at half speed'}; figures wait for a tap. Jumping pauses.`;
@@ -1606,7 +1667,7 @@ function animate(now, immediate = false) {
     const message = active && !layout ? pdfOpenMessage
       : !libraryReady ? { body: 'Opening your saved library…', status: 'Loading', kind: 'loading' } : null;
     const frame = { layout, y: reader.y, title: active?.title, mode: reader.mode, playing: reader.playing,
-      speed: reader.speed, picker: picker ? { ...picker, syncEnabled: true, syncing: !!librarySync, syncStatus: librarySyncLabel } : null, positionPicker, selection: selectionVersion, message,
+      speed: reader.speed, picker: picker ? { ...picker, syncEnabled: picker.kind !== 'terminal-sessions', syncing: picker.kind !== 'terminal-sessions' && !!librarySync, syncStatus: picker.kind === 'terminal-sessions' ? '' : librarySyncLabel } : null, positionPicker, selection: selectionVersion, message,
       wordFrame: reader.mode === 'speed' ? reader.speedReading.current : null, wordRate: reader.speedReading.rate,
       remainingSeconds: reader.speedReading.remainingSeconds,
       pageRemainingSeconds: reader.pageRemainingSeconds,
@@ -1657,7 +1718,7 @@ function animate(now, immediate = false) {
     if (!glasses.bridge && !window.flutter_inappwebview?.callHandler) sampleReading(frame, now);
     if (!glasses.bridge && !window.flutter_inappwebview?.callHandler && !document.hidden) askUI?.acceptFrame(frame);
     if (!layout || rowAt(layout, reader.y) !== lastPassage) renderPassage();
-    const key = `${active?.id}:${Math.floor(frame.y)}:${frame.mode}:${frame.playing}:${layout?.size}:${reader.speed}:${frame.nativePdf?.reveal}:${frame.wordFrame?.start}:${frame.wordFrame?.end}:${frame.wordRate}:${frame.finished}:${frame.pauseAtTitles}:${frame.pageRemainingSeconds}:${positionPicker ? `position-${positionPicker.kind}-${positionPicker.index}-${positionPicker.percent}-${positionPicker.step}-${positionPicker.entries?.length}` : picker?.index ?? 'reader'}:${librarySyncLabel}:${!!librarySync}:${frame.message?.body || ''}:${frame.message?.status || ''}:${frame.message?.statusCenter || ""}:${frame.message?.statusLeft || ""}:${frame.message?.statusRight || ""}:${JSON.stringify(frame.dialog || null)}:${frame.modePicker?.index ?? ''}:${!!footnotesView}:${frame.askStatus}:${frame.askUnavailable}`;
+    const key = `${active?.id}:${Math.floor(frame.y)}:${frame.mode}:${frame.playing}:${layout?.size}:${reader.speed}:${frame.nativePdf?.reveal}:${frame.wordFrame?.start}:${frame.wordFrame?.end}:${frame.wordRate}:${frame.finished}:${frame.pauseAtTitles}:${frame.pageRemainingSeconds}:${positionPicker ? `position-${positionPicker.kind}-${positionPicker.index}-${positionPicker.percent}-${positionPicker.step}-${positionPicker.entries?.length}` : picker ? documentPickerText(picker) : 'reader'}:${librarySyncLabel}:${!!librarySync}:${frame.message?.body || ''}:${frame.message?.status || ''}:${frame.message?.statusCenter || ""}:${frame.message?.statusLeft || ""}:${frame.message?.statusRight || ""}:${JSON.stringify(frame.dialog || null)}:${frame.modePicker?.index ?? ''}:${!!footnotesView}:${frame.askStatus}:${frame.askUnavailable}`;
     const timedWords = frame.mode === 'speed' && frame.playing && frame.wordFrame && !frame.dialog && !frame.modePicker;
     if (key !== lastSentKey && (immediate || timedWords || now - lastSend >= 120)) {
       glasses.submit(frame); lastSentKey = key; lastSend = now;
