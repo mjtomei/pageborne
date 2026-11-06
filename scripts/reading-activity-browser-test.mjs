@@ -89,6 +89,12 @@ try {
       await page.evaluate(() => window.__reading.sync());
       await expect.poll(() => page.evaluate(() => window.__reading.units.length)).toBeGreaterThan(10);
       const initial = await page.evaluate(() => window.__reading.words);
+      const initialSpeed = await page.locator('#library-reading-speed').textContent();
+      await page.waitForTimeout(6500);
+      await page.evaluate(() => window.__reading.next());
+      await expect.poll(() => page.evaluate(() => window.__reading.entries.filter(e => e.kind === 'document').length)).toBeGreaterThan(0);
+      assert.equal(await page.evaluate(() => window.__reading.words), initial, 'one read pane stays in the raw log but is not counted');
+      await expect(page.locator('#library-reading-speed')).toHaveText(initialSpeed);
       await page.waitForTimeout(6500);
       await page.evaluate(() => window.__reading.next());
       await expect.poll(() => page.evaluate(() => window.__reading.words)).toBeGreaterThan(initial);
@@ -101,6 +107,10 @@ try {
       const docBeforeAsk = await page.evaluate(() => window.__reading.words), askBefore = await page.evaluate(() => window.__reading.askWords);
       await page.evaluate(() => window.__reading.ask());
       await expect.poll(() => page.evaluate(() => window.__reading.askUnits.length)).toBeGreaterThan(10);
+      await page.waitForTimeout(8000);
+      await page.evaluate(() => window.__reading.askNext());
+      await expect.poll(() => page.evaluate(() => window.__reading.entries.filter(e => e.kind === 'ask').length)).toBeGreaterThan(0);
+      assert.equal(await page.evaluate(() => window.__reading.askWords), askBefore, 'single Ask panes use the same exclusion');
       await page.waitForTimeout(8000);
       await page.evaluate(() => window.__reading.askNext());
       await expect.poll(() => page.evaluate(() => window.__reading.askWords)).toBeGreaterThan(askBefore + 10);
@@ -173,7 +183,10 @@ try {
       await page.locator('#reading-history input[type=date]').fill(groupedDay);
       await page.locator('#reading-history input[type=date]').dispatchEvent('change');
       await expect(page.locator('.reading-entries > li')).toHaveCount(3);
-      await expect(page.locator('.reading-total')).toHaveText('60 words');
+      await expect(page.locator('.reading-total')).toHaveText('55 words');
+      await expect(page.locator('.reading-explanation').first()).toContainText('Single-pane sessions do not count');
+      await expect(page.locator('.reading-entries > li').nth(1)).toContainText('0 words');
+      await expect(page.locator('.reading-entries > li').nth(2)).toContainText('0 words');
       const grouped = page.locator('.reading-entries > li').first();
       await expect(grouped).toContainText('55 words · pages 1–55');
       await expect(grouped.getByRole('button', { name: 'Claude conversation', exact: true })).toHaveCount(1);

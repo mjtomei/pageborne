@@ -48,7 +48,9 @@ test('text position ranges preserve rereading and group whole runs before pagina
 
 function fixture(start = new Date(2026, 10, 2, 12).getTime()) {
   let time = 0, id = 0; const raw = [], events = [];
-  const tracker = new ReadingTracker(e => { raw.push(e); events.splice(0, events.length, ...acceptedReadingEntries([...raw])); },
+  // These tracker/storage tests isolate per-pane rate filtering. Session-level
+  // accounting is covered in reading-sessions.test.js and the browser suite.
+  const tracker = new ReadingTracker(e => { raw.push(e); events.splice(0, events.length, ...acceptedReadingEntries([...raw], { minPanes: 1 })); },
     { clock: () => time, date: () => new Date(start + time), id: () => `entry-${++id}` });
   const view = (from, end) => ({ scope: 'pageborne:instance:library', platform: 'glasses', document: { id: 'book.txt', key: 'local\nbook.txt', title: 'Book', revision: 'one' },
     position: from, units: Array.from({ length: end - from }, (_, i) => ({ key: String(from + i), words: 1, text: `word${from + i}` })) });
@@ -196,7 +198,7 @@ test('raw log keeps fast, empty and idle panes with both timestamps; filters can
   assert.ok(raw.every(e => e.version === 2 && Date.parse(e.endedAt) >= Date.parse(e.at)));
   assert.equal(readingTotals(raw).words, 0);
   const before = JSON.stringify(raw);
-  assert.ok(Math.abs(acceptedReadingEntries(raw, { maxWpm: 40000, maxViewSeconds: 600 }).reduce((n, e) => n + e.words, 0) - 120) < 1e-8);
+  assert.ok(Math.abs(acceptedReadingEntries(raw, { maxWpm: 40000, maxViewSeconds: 600, maxPauseSeconds: 600 }).reduce((n, e) => n + e.words, 0) - 120) < 1e-8);
   assert.equal(JSON.stringify(raw), before, 're-filtering does not mutate stored observations');
 });
 test('raw pauses preserve separate start/end intervals without counting the hidden gap twice', () => {
@@ -205,18 +207,20 @@ test('raw pauses preserve separate start/end intervals without counting the hidd
   tick(0, view(0, 60)); tick(11000, view(60, 120));
   assert.equal(raw.length, 2); assert.equal(raw[0].viewId, raw[1].viewId);
   assert.equal(Date.parse(raw[1].at) - Date.parse(raw[0].endedAt), 60000);
-  assert.ok(Math.abs(readingTotals(raw).words - 60) < 1e-8);
-  assert.ok(Math.abs(readingTotals(raw).seconds - 12) < 1e-8);
+  assert.equal(readingTotals([...raw]).words, 0, 'two intervals of one pane remain excluded');
+  tick(12000, view(120, 180));
+  assert.ok(Math.abs(readingTotals(raw).words - 120) < 1e-8);
+  assert.ok(Math.abs(readingTotals(raw).seconds - 24) < 1e-8);
 });
 test('document and combined speeds share the same filter and weight by elapsed reading time', () => {
   const { tracker, raw, view, tick } = fixture();
-  tracker.observe(view(0, 60)); tick(60000, { ...view(0, 100), kind: 'ask' });
-  tick(20000, { ...view(100, 200), kind: 'ask' }); tick(100, view(60, 120));
+  tracker.observe(view(0, 60)); tick(60000, view(60, 120)); tick(60000, { ...view(0, 100), kind: 'ask' });
+  tick(20000, { ...view(100, 200), kind: 'ask' }); tick(20000, { ...view(200, 300), kind: 'ask' }); tick(100, view(120, 180));
   const doc = readingTotals(raw), ask = readingTotals(raw, { kind: 'ask' }), both = readingTotals(raw, { includeAsk: true });
   assert.ok(Math.abs(doc.wpm - 60) < 1e-8, 'reading below 100 WPM is accepted');
   assert.ok(Math.abs(ask.wpm - 300) < 1e-8);
   assert.ok(Math.abs(both.wpm - 120) < 1e-8);
-  assert.equal(raw.filter(e => e.kind === 'ask').length, 2, 'fast Ask pane is kept in raw log');
+  assert.equal(raw.filter(e => e.kind === 'ask').length, 3, 'fast Ask pane is kept in raw log');
 });
 test('streaming a pane accumulates exposure without logging every arriving fragment', () => {
   const { tracker, raw, view, tick } = fixture();
@@ -225,14 +229,18 @@ test('streaming a pane accumulates exposure without logging every arriving fragm
   tick(6000, { ...view(60, 90), kind: 'ask', pane: 'next' });
   assert.equal(raw.length, 1); assert.equal(raw[0].units.length, 60);
   assert.ok(Math.abs(raw[0].units.reduce((n, u) => n + u[2], 0) - 12) < 1e-8);
-  assert.ok(Math.abs(readingTotals(raw, { includeAsk: true }).words - 60) < 1e-8);
+  assert.equal(readingTotals([...raw], { includeAsk: true }).words, 0);
+  tick(6000, { ...view(90, 120), kind: 'ask', pane: 'third' });
+  assert.ok(Math.abs(readingTotals(raw, { includeAsk: true }).words - 90) < 1e-8);
 });
 test('midnight and exact-midnight ticks retain raw intervals and apportion eligible words', () => {
   const date = new Date(2026, 10, 2, 23, 59, 58), { tracker, raw, view, tick } = fixture(date.getTime());
   tracker.observe(view(0, 40)); tick(2000, view(0, 40)); tick(2000, view(40, 80));
   assert.equal(raw.length, 2); assert.equal(raw[0].endedAt, raw[1].at);
+  assert.equal(readingTotals([...raw]).words, 0, 'midnight alone does not qualify a single-pane session');
+  tick(4000, view(80, 120));
   const a = readingTotals(raw, { day: readingDay(date) }), b = readingTotals(raw, { day: readingDay(new Date(date.getTime() + 4000)) });
-  assert.ok(Math.abs(a.words - 20) < 1e-8); assert.ok(Math.abs(b.words - 20) < 1e-8);
+  assert.ok(Math.abs(a.words - 20) < 1e-8); assert.ok(Math.abs(b.words - 60) < 1e-8);
 });
 test('raw panes survive phone storage, desktop validation and idempotent merging including zero words/time', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'reading-raw-'));

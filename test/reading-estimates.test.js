@@ -4,11 +4,14 @@ import { averageReadingSpeed, readingSpeedLabel, documentReadingWords, preparedR
 import { localSnapshot, replaceDocument, updateDocumentMetadata } from '../src/library.js';
 
 test('average uses accepted word/time totals, excludes fast paging and invalid samples, and deduplicates sync', () => {
-  const accepted = [{ id: 'short', words: 100, seconds: 60 }, { id: 'long', words: 900, seconds: 180 }];
+  const legacy = (id, words, seconds, position) => ({ id, words, seconds, position, platform: 'glasses',
+    document: { key: 'book' }, at: `2026-11-02T12:0${position}:00Z`, endedAt: `2026-11-02T12:0${position + 1}:00Z` });
+  const accepted = [legacy('short', 100, 60, 0), legacy('long', 900, 180, 1)];
   assert.equal(averageReadingSpeed([...accepted, accepted[0], { words: 100, seconds: 1 }, { words: 1, seconds: 10 },
     { words: 0, seconds: 5 }, { words: NaN, seconds: 1 }, { words: 50, seconds: 0 }]), 250);
-  assert.equal(averageReadingSpeed([{ words: 10, seconds: 60 }]), 10);
-  assert.equal(averageReadingSpeed([{ words: 900, seconds: 60 }]), 900);
+  assert.equal(averageReadingSpeed([legacy('a', 10, 60, 0), legacy('b', 10, 60, 1)]), 10);
+  assert.equal(averageReadingSpeed([legacy('a', 900, 60, 0), legacy('b', 900, 60, 1)]), 900);
+  assert.equal(averageReadingSpeed([accepted[0]]), null);
   assert.equal(averageReadingSpeed([]), null);
   assert.match(readingSpeedLabel(null), /No average yet.*200 wpm/);
 });

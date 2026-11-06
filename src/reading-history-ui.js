@@ -65,7 +65,7 @@ export class ReadingHistoryUI {
       bar.onclick = () => { this.day = day; this.limit = 50; this.render(); }; chart.append(bar);
     }
     this.body.append(chart, node('p', `${days[0]} — ${days.at(-1)} · peak ${number(max === 1 && !totals.size ? 0 : max)} words/day`, 'muted'),
-      node('p', 'Estimated from text shown and then moved past at 10–900 words/minute. Both averages use the same filter. Fast paging, image-only views and views idle for over five minutes do not count. The graph counts documents only; Ask includes visible questions and answers, excluding typing, recording and activity/status text. Rereading counts again. Days use the device’s local date.', 'reading-explanation muted'),
+      node('p', 'Estimated from text shown and then moved past at 10–900 words/minute. A session must include at least two distinct text panes read at that pace. Single-pane sessions do not count toward words, reading time or either average. Pauses over five minutes start a new session. Fast paging, image-only views and views idle for over five minutes do not count. The graph counts documents only; Ask includes visible questions and answers, excluding typing, recording and activity/status text. Rereading counts again. Days use the device’s local date.', 'reading-explanation muted'),
       node('p', 'Every new pane view is kept with start/end times, including excluded views. Expand a viewing log below or export the data. Older history contains only readings accepted at the time.', 'reading-explanation muted'),
       node('p', this.sync.status?.() || 'Saved on this device', 'muted'));
     if (!selected.length) this.body.append(node('p', 'No reading logged for this day yet. Read some text, then move on to the next page or document.', 'reading-empty'));
