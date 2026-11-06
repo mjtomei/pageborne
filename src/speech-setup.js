@@ -55,25 +55,29 @@ export class SpeechSetup {
     }
     dialog.addEventListener('cancel', event => event.preventDefault());
     dialog.querySelector('#speech-setup-retry').onclick = () => this.attempt(true);
+    dialog.querySelector('#speech-setup-free-space').onclick = () => this.freeSpace();
+    dialog.querySelector('#speech-setup-skip').onclick = () => this.continueWithoutVoice();
     this.render();
   }
   frame() { return speechSetupFrame(Object.values(this.models.entries), this.error, this.models.store); }
-  start(initialize) {
+  start(initialize) { return this.begin(initialize); }
+  begin(initialize, { retry = false } = {}) {
     if (this.pending) return this.pending;
     this.blocked = true; this.initialize = initialize;
     this.pending = new Promise(resolve => { this.resolve = resolve; });
     const tick = () => { this.render(); if (this.blocked) this.timer = setTimeout(tick, 1000); };
     this.timer = setTimeout(tick, 1000);
-    void this.attempt(false);
+    void this.attempt(retry);
     return this.pending;
   }
   async attempt(retry) {
     if (this.busy) return;
-    this.busy = true; this.error = ''; this.render();
+    this.busy = true; this.error = ''; this.recoveryStatus = ''; this.render();
     // Restore a small receipt before deciding whether a setup modal is needed.
     await new Promise(resolve => setTimeout(resolve, 25));
     try {
       const restored = await this.initialize({ retry });
+      this.initialized = true;
       if (!retry && restored?.recoveredSetup) throw Error('Previous voice setup did not finish. Export the saved log below, or choose Retry setup.');
       const verified = await this.models.restoreVerification();
       if (!verified || retry) { this.dialog.showModal(); this.dialog.querySelector('h2').focus(); }
@@ -86,12 +90,30 @@ export class SpeechSetup {
       if (this.dialog.open) await new Promise(resolve => setTimeout(resolve, 350));
       // Reading does not need resident speech heaps. Load them on speaking;
       // the saved checks remain valid and weights remain on the phone.
+      this.suspended = false;
       this.models.close();
       this.blocked = false; cancelTimeout(this.timer); this.dialog.close(); this.resolve(); this.pending = null;
     } catch (error) {
+      this.storageFailure = error.code === 'phone-storage-write' || error.name === 'QuotaExceededError' || /phone storage|quota/i.test(error.message);
       this.error = error.message || 'Voice setup could not finish. Retry when connected.';
       if (!this.dialog.open) this.dialog.showModal();
     } finally { this.busy = false; this.render(); }
+  }
+  async freeSpace() {
+    if (this.busy || !this.recoverStorage) return;
+    this.busy = true; this.recoveryStatus = 'Freeing cached space…'; this.render();
+    try {
+      const chars = await this.recoverStorage();
+      this.recoveryStatus = chars ? `Cleared ${(chars / 1e6).toFixed(1)} MB of cached data. Retry setup to check whether there is enough room.`
+        : 'No disposable cached data to clear. You can continue without voice to access your library.';
+    } catch (error) { this.recoveryStatus = `Could not clear cached data: ${error.message}`; }
+    finally { this.busy = false; this.render(); }
+  }
+  continueWithoutVoice() {
+    if (this.busy || !this.initialized || !this.error) return;
+    this.suspended = true; this.models.close();
+    this.blocked = false; cancelTimeout(this.timer); this.dialog.close();
+    this.resolve?.(); this.pending = null;
   }
   render() {
     const entries = Object.values(this.models.entries);
@@ -117,8 +139,14 @@ export class SpeechSetup {
     this.dialog.querySelector('#speech-setup-help').textContent = modelDownloadSummary(this.models.store, ready)
       + ' Successful checks are saved on this device. Checks repeat if the models, device or speech runtime change; models load when you speak.';
     const status = this.dialog.querySelector('[role=status]');
-    const text = this.error || (ready ? 'All three models passed. Opening Pageborne…' : 'Keep Pageborne open while voice is prepared.');
+    const text = this.recoveryStatus || (this.storageFailure && this.error
+      ? 'Even could not save Pageborne data. Its app storage may be full or unavailable. Free cached space, then retry, or continue without voice.'
+      : this.error) || (ready ? 'All three models passed. Opening Pageborne…' : 'Keep Pageborne open while voice is prepared.');
     if (status.textContent !== text) status.textContent = text;
     const retry = this.dialog.querySelector('#speech-setup-retry'); retry.hidden = !this.error; retry.disabled = this.busy;
+    const free = this.dialog.querySelector('#speech-setup-free-space');
+    free.hidden = !(this.error && this.storageFailure && this.recoverStorage); free.disabled = this.busy;
+    this.dialog.querySelector('#speech-setup-recovery-help').hidden = free.hidden;
+    const skip = this.dialog.querySelector('#speech-setup-skip'); skip.hidden = !(this.error && this.initialized); skip.disabled = this.busy;
   }
 }

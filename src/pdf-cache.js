@@ -90,7 +90,7 @@ const JOURNAL = `${PREFIX}:pending`;
 export class PdfPreparationCache {
   constructor(kv, { maxChars = 16 * 1024 * 1024, maxEntryChars = Infinity } = {}) {
     this.kv = kv; this.maxChars = maxChars; this.maxEntryChars = maxEntryChars;
-    this.index = new AtomicPhoneValue(kv, 'pdf-cache:index'); this.tail = Promise.resolve(); this.generations = new Map();
+    this.index = new AtomicPhoneValue(kv, 'pdf-cache:index'); this.tail = Promise.resolve(); this.generations = new Map(); this.epoch = 0;
   }
   serialize(fn) { const task = this.tail.catch(() => {}).then(fn); this.tail = task.then(() => {}, () => {}); return task; }
   async recover() {
@@ -109,7 +109,8 @@ export class PdfPreparationCache {
   }
   forDocument(id) {
     const generation = this.generations.get(id) || 0;
-    const current = () => generation === (this.generations.get(id) || 0);
+    const epoch = this.epoch;
+    const current = () => epoch === this.epoch && generation === (this.generations.get(id) || 0);
     return {
       read: key => this.serialize(async () => {
         await this.recover();
@@ -140,6 +141,43 @@ export class PdfPreparationCache {
         return true;
       }),
     };
+  }
+  clear() {
+    this.epoch++;
+    return this.serialize(async () => {
+      // At quota, even writing an empty replacement index can fail. Reclaim
+      // disposable bodies first using the existing index/journal as the resume
+      // record. Originals, preferences, voice weights and reading logs are in
+      // separate namespaces and must never be targets of this operation.
+      const entries = (await this.index.read())?.entries || [];
+      const journal = await this.kv.get(JOURNAL);
+      const pending = JSON.parse(journal || '[]');
+      if (!Array.isArray(entries) || !Array.isArray(pending)) throw new Error('Invalid PDF cache index. No files were changed.');
+      const bodies = [...entries.map(entry => entry.body), ...pending];
+      for (const body of bodies) {
+        validateDescriptor(body, { largeValue: true });
+        if (!body.prefix.startsWith(`${PREFIX}:body:`) || !/^[\w-]+$/.test(body.prefix.slice(`${PREFIX}:body:`.length))) {
+          throw new Error('Invalid PDF cache entry. No files were changed.');
+        }
+      }
+      let cleared = 0;
+      const seen = new Set();
+      for (const body of bodies) {
+        for (let i = 0; i < body.count; i++) {
+          const key = `${body.prefix}:${i}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const value = await this.kv.get(key);
+          if (value) { await this.kv.set(key, ''); cleared += value.length; }
+        }
+      }
+      // Clearing the journal before the pointer is safe: all pending bodies
+      // are already gone. An interruption leaves the committed list to retry.
+      if (journal) await this.kv.set(JOURNAL, '');
+      if (this.index.head) await this.kv.set(this.index.key, '');
+      this.index.head = null; this.entries = [];
+      return cleared;
+    });
   }
   remove(id) {
     this.generations.set(id, (this.generations.get(id) || 0) + 1);

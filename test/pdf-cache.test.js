@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { PdfPreparationCache, pdfPreparationKey, packPdfPreparation, unpackPdfPreparation, validatePdfPreparation } from '../src/pdf-cache.js';
 import { createPdfLayout, pdfAnchor, restorePdfAnchor } from '../src/pdf-layout.js';
 import { pdfNativeWindow } from '../src/pdf-native.js';
-import { CHUNK_CHARS, STORAGE_PREFIX } from '../src/phone-storage.js';
+import { CHUNK_CHARS, STORAGE_PREFIX, descriptor, chunksOf } from '../src/phone-storage.js';
 
 function memoryPhone() {
   const values = new Map();
@@ -12,6 +12,46 @@ function memoryPhone() {
 }
 const bodyValues = kv => [...kv.values].filter(([key, value]) => key.includes(':pdf-cache:body:') && value);
 const payload = { text: 'Prepared OCR text 👓 café '.repeat(4000) };
+
+test('explicit cache recovery works with no write headroom and preserves all durable user data', async () => {
+  const kv = memoryPhone(), cache = new PdfPreparationCache(kv);
+  const stale = cache.forDocument('a.pdf'); await stale.write('old', payload);
+  const keep = ['library', 'preferences', 'reading-activity', 'models'].map(name => [`${STORAGE_PREFIX}:${name}`, `Keep ${name}`]);
+  for (const [key, value] of keep) kv.values.set(key, value);
+  kv.failure = (key, value) => !!value;
+  const freed = await cache.clear(); assert(freed > 1000);
+  assert.equal(bodyValues(kv).length, 0);
+  assert.equal(await new PdfPreparationCache(kv).forDocument('a.pdf').read('old'), null);
+  for (const [key, value] of keep) assert.equal(kv.values.get(key), value);
+  assert.equal(await stale.write('stale', payload), false, 'queued handles cannot refill a cleared cache');
+  kv.failure = null;
+  assert.equal(await cache.forDocument('a.pdf').write('new', payload), true);
+});
+
+test('cache recovery resumes after interruption and also clears uncommitted bodies', async () => {
+  const kv = memoryPhone(), cache = new PdfPreparationCache(kv);
+  await cache.forDocument('a.pdf').write('old', payload);
+  let writes = 0;
+  kv.failure = (key, value) => key.includes(':body:') && value && ++writes === 3;
+  await assert.rejects(cache.forDocument('b.pdf').write('new', payload));
+  let clears = 0;
+  kv.failure = (key, value) => key.includes(':body:') && !value && ++clears === 2;
+  await assert.rejects(cache.clear());
+  kv.failure = (key, value) => !!value;
+  await new PdfPreparationCache(kv).clear();
+  assert.equal(bodyValues(kv).length, 0);
+  assert.equal(kv.values.get(`${STORAGE_PREFIX}:pdf-cache:pending`), '');
+});
+
+test('cache recovery refuses foreign journal pointers before deleting anything', async () => {
+  const kv = memoryPhone(), cache = new PdfPreparationCache(kv);
+  await cache.forDocument('a.pdf').write('old', payload);
+  const foreign = descriptor(`${STORAGE_PREFIX}:preferences`, 'keep', chunksOf('keep'));
+  kv.values.set(`${STORAGE_PREFIX}:pdf-cache:pending`, JSON.stringify([foreign]));
+  const before = new Map(kv.values);
+  await assert.rejects(cache.clear(), /Invalid PDF cache entry/);
+  assert.deepEqual(kv.values, before);
+});
 
 test('full PDF bytes, formatting settings and PDF.js version invalidate preparation', async () => {
   const bytes = new Uint8Array(4096); const key = await pdfPreparationKey(bytes, { reflow: true, textSize: 20 }, '6');

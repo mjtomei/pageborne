@@ -315,6 +315,9 @@ export class AskUI {
     return { context: askContext(layout, y, title, wordFrame, 1000), history: this.chat.vocabularyHistory(key) };
   }
   async hold(source = this.options().evenHost ? 'glasses' : 'phone') {
+    if (!this.unavailableReason && !this.speech.setup.blocked && this.speech.setup.suspended && this.speech.backend !== 'remote') {
+      void this.speech.retrySetup(); return;
+    }
     const started = performance.now();
     if (this.session.active && ['starting', 'listening', 'transcribing'].includes(this.session.status)) return;
     const previousVisibility = { phoneVisible: this.phoneVisible, glassesVisible: this.glassesVisible };

@@ -67,7 +67,7 @@ export function bridgeStorage(bridge, lane) {
     },
     async set(key, value) {
       if (await lane.run('storage-write', () => bridge.setLocalStorage(key, value), { quiet: key.startsWith('pageborne:models:v1:') }) !== true) {
-        throw new Error('Could not save to phone storage. Free some space and try again.');
+        throw Object.assign(new Error('Could not save to phone storage. Free some space and try again.'), { code: 'phone-storage-write' });
       }
     },
   };

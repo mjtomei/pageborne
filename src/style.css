@@ -662,7 +662,8 @@ input[type=checkbox][role=switch]:disabled{opacity:.42}
 .speech-setup-status { margin:18px 0 10px; line-height:1.4; color:var(--muted); }
 .speech-setup-detail { margin:0; font-size:.8em; color:var(--muted); overflow-wrap:anywhere; }
 #speech-setup button { width:100%; }
-#speech-setup-export { margin-top:10px; }
+#speech-setup button + button { margin-top:10px; }
+#speech-setup-recovery-help { color:var(--muted); line-height:1.45; margin:14px 0 10px; }
 
 /* One reader on glasses, desktop and mobile. Keep the exact 2:1 display geometry. */
 .preview-stage{min-width:0}

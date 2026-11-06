@@ -57,6 +57,8 @@ Install the package using your Even Hub development/publishing workflow. `app.js
 
 Model weights download on first voice setup (about 249 MB total) and are cached on the device. Inference runtime assets ship with the application. npm fetches a pinned [Browser STT](https://github.com/mjtomei/browser-stt) source revision and builds its workers during installation; no speech-engine tarball is stored here. See [speech package notes](SPEECH-PACKAGE.md). [Third-party notices](LICENSING.md) list the terms for the downloaded models and bundled runtimes.
 
+If Even refuses a storage write during setup, **Free cached space** removes cached PDF layouts and unfinished model downloads. Original documents, complete voice models, chats and reading history remain saved. PDF layouts will need to be fetched or prepared again. **Continue without voice** opens the library and typed Ask; use **Retry voice** in Settings when ready. A storage refusal does not establish the phone's free space or Even's exact app quota.
+
 ## Configuring for a custom Even Terminal
 
 If you run the custom Even Terminal from the [even-terminal-patch](https://github.com/mjtomei/even-terminal-patch) repository, this is where its connection settings go. Copy the example to **`.env.local`**, which Git ignores, and put your deployment settings there:

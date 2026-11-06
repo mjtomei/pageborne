@@ -22,13 +22,26 @@ export class SpeechUI {
     this.vocabularyDialog = helpPopup([$('speech-vocabulary-details')], { button: $('speech-vocabulary-show'), title: 'Vocabulary hints' });
     $('speech-vocabulary-show').addEventListener('click', () => this.previewVocabulary());
     $('speech-vocabulary-refresh').onclick = () => this.previewVocabulary();
-    $('speech-retry').onclick = () => this.open({ retry: true });
+    $('speech-retry').onclick = () => this.setup.suspended ? this.retrySetup() : this.open({ retry: true });
   }
   get backend() { return speechBackend(this.read()); }
   open({ retry = false } = {}) {
+    if (this.setup.suspended) return;
     this.idleGeneration = (this.idleGeneration || 0) + 1;
     this.opened = true;
     if (this.backend !== 'remote' && !this.setup.blocked) void this.models.open({ retry });
+  }
+  retrySetup() { return this.setup.begin(this.setup.initialize, { retry: true }); }
+  async recoverDownloads() {
+    const cache = await this.models.store.cache();
+    let cleared = 0;
+    for (const entry of Object.values(this.models.entries)) {
+      for (const key of [`preparation:${entry.model.id}`, `verification:${entry.model.id}`,
+        ...entry.model.files.filter(file => file.text === undefined).map(file => file.sha256)]) {
+        cleared += await cache.recover?.(key) || 0;
+      }
+    }
+    return cleared;
   }
   transcribe(id, audio, options = {}) {
     // Snapshot the exact normalized array at dispatch, not a later recomputation
@@ -92,10 +105,12 @@ export class SpeechUI {
     }
     const describe = e => `${e.model.name}: ${e.state === 'ready' ? 'ready' : e.state === 'error' ? e.error.message
       : e.state === 'downloading' ? modelFileStatus(e, this.models.store).text : e.state === 'loading' ? e.progress : e.verified ? 'saved and checked' : 'waiting for setup'}`;
-    const text = this.backend === 'remote' ? 'Uses the speech endpoint in connection settings.' : entries.map(describe).join(' · ') + '. ' + modelDownloadSummary(this.models.store, entries.every(e => e.verified));
+    const text = this.backend === 'remote' ? 'Uses the speech endpoint in connection settings.' : this.setup.suspended
+      ? 'Voice is paused after setup failed. Reading and typed Ask remain available. Choose Retry voice to prepare speech again.'
+      : entries.map(describe).join(' · ') + '. ' + modelDownloadSummary(this.models.store, entries.every(e => e.verified));
     this.status(text);
-    $('speech-retry').hidden = this.backend === 'remote' || !entries.some(e => e.state === 'error' || e.state === 'idle' && !e.verified);
-    $('speech-retry').textContent = entries.some(e => e.state === 'error') ? 'Retry voice' : 'Prepare voice';
+    $('speech-retry').hidden = this.backend === 'remote' || !this.setup.suspended && !entries.some(e => e.state === 'error' || e.state === 'idle' && !e.verified);
+    $('speech-retry').textContent = this.setup.suspended || entries.some(e => e.state === 'error') ? 'Retry voice' : 'Prepare voice';
     $('ask-voice-models').textContent = text;
   }
   status(text) { $('speech-status').textContent = text; }
