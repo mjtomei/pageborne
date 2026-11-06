@@ -10,18 +10,29 @@ const text = (v, max) => typeof v === 'string' && v.length <= max && !v.includes
 const revision = entries => createHash('sha256').update(JSON.stringify(entries)).digest('hex');
 function validDay(day) { const date = new Date(`${day}T00:00:00Z`); return dayPattern.test(day) && Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === day; }
 export function validateReadingEntry(e, day, scope) {
+  const raw = e?.version === 2;
   if (!e || !text(e.id, 100) || !e.id || e.day !== day || e.scope !== scope
     || !Number.isFinite(Date.parse(e.at)) || !Number.isFinite(Date.parse(e.endedAt))
-    || !Number.isFinite(e.words) || e.words <= 0 || e.words > 20000
-    || !Number.isFinite(e.seconds) || e.seconds <= 0 || e.seconds > 3600
+    || !Number.isFinite(e.words) || (raw ? e.words < 0 : e.words <= 0) || e.words > 20000
+    || !Number.isFinite(e.seconds) || (raw ? e.seconds < 0 : e.seconds <= 0) || e.seconds > (raw ? 90001 : 3600)
     || !['glasses', 'web', 'preview'].includes(e.platform)
     || !text(e.document?.id, 220) || !text(e.document.key, 1000) || !text(e.document.title, 300)
-    || e.document.revision != null && !text(e.document.revision, 200)
+    || e.document.revision != null && !text(e.document.revision, 300)
     || !Number.isFinite(e.position) || e.position < 0 || e.position > 100
     || e.page != null && (!Number.isInteger(e.page) || e.page < 1 || e.page > 100000)
     || !text(e.excerpt, 240) || !Array.isArray(e.sessions) || e.sessions.length > 100
     || e.sessions.some(s => !['claude', 'codex'].includes(s.agent) || !text(s.id, 300) || !s.id || s.cwd != null && !text(s.cwd, 4000))) fail();
+  if (raw && (!['document', 'ask'].includes(e.kind) || !text(e.run, 100) || !e.run || !text(e.viewId, 100) || !e.viewId
+    || !['page', 'pause', 'source', 'leave', 'layout', 'midnight'].includes(e.reason)
+    || !Number.isFinite(e.maxGapSeconds) || e.maxGapSeconds < 0
+    || !Array.isArray(e.units) || e.units.length > 20000
+    || e.units.some(u => !Array.isArray(u) || u.length !== 3 || !text(u[0], 2000) || !u[0]
+      || !Number.isFinite(u[1]) || u[1] <= 0 || !Number.isFinite(u[2]) || u[2] < 0 || u[2] > e.seconds + 0.001)
+    || new Set(e.units.map(u => u[0])).size !== e.units.length
+    || Math.abs(e.units.reduce((sum, u) => sum + u[1], 0) - e.words) > 0.001
+    || e.units.reduce((sum, u) => sum + u[2], 0) > e.seconds + 0.001)) fail();
   return { id: e.id, day, at: e.at, endedAt: e.endedAt, words: e.words, seconds: e.seconds, platform: e.platform,
+    ...(raw ? { version: 2, kind: e.kind, run: e.run, viewId: e.viewId, units: e.units.map(u => [...u]), maxGapSeconds: e.maxGapSeconds, reason: e.reason } : {}),
     scope, document: { id: e.document.id, key: e.document.key, title: e.document.title, ...(e.document.revision ? { revision: e.document.revision } : {}) },
     position: e.position, ...(e.page ? { page: e.page } : {}), excerpt: e.excerpt,
     sessions: e.sessions.map(s => ({ agent: s.agent, id: s.id, ...(s.cwd ? { cwd: s.cwd } : {}) })) };
@@ -61,7 +72,7 @@ export function createReadingActivity({ identity, libraryDir = process.env.PAGEB
       const saved = cached?.signature === signature ? cached : await read(day);
       days.push({ day, revision: saved.revision });
     }
-    return { version: 1, days: days.sort((a, b) => a.day.localeCompare(b.day)) };
+    return { version: 1, observations: 2, days: days.sort((a, b) => a.day.localeCompare(b.day)) };
   }
   async function update(day, input) {
     if (!validDay(day) || !Array.isArray(input?.entries) || input.entries.length > 50) fail();
@@ -89,6 +100,13 @@ export function installReadingActivity(router, options) {
   const store = createReadingActivity(options);
   const handler = run => async (req, res) => { try { res.json(await run(req)); } catch (e) { res.status(e.status || 500).json({ error: e.status ? e.message : 'Could not access reading history.' }); } };
   router.get('/pageborne/reading-activity', handler(() => store.index()));
-  router.get('/pageborne/reading-activity/:day', handler(req => store.read(req.params.day)));
+  router.get('/pageborne/reading-activity/:day', handler(async req => {
+    const result = await store.read(req.params.day);
+    if (req.query.observations === '2') return result;
+    // Older Pageborne clients assume every event was already accepted. Never
+    // let them mistake raw image/idle/Ask exposures for document reading.
+    const entries = result.entries.filter(e => e.version !== 2);
+    return { entries, revision: revision(entries) };
+  }));
   router.post('/pageborne/reading-activity/:day', handler(req => store.update(req.params.day, req.body)));
 }

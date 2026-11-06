@@ -464,7 +464,8 @@ export class GlassesDisplay {
     if (this.interrupted(frame)) return;
     const dialog = frameDialog(frame);
     const reading = !!frame.layout && !dialog && !frame.message && !frame.picker && !frame.positionPicker && !frame.modePicker && !frame.footnotes;
-    if (!reading) this.readingFrame = null;
+    const askReading = frame.message?.kind === 'ask' && !!frame.message.readingUnits?.length && !dialog && !frame.modePicker;
+    if (!reading && !askReading) this.readingFrame = null;
     const reviewTop = dialog ? transcriptionGeometry(dialog).top : null;
     const activity = !pdf && bodyTextObjects(content).length > 1;
     const surface = (dialog ? `review-${pdf ? 'pdf' : 'text'}` : frame.modePicker ? `mode-${pdf ? 'pdf' : 'text'}` : pdf ? 'pdf' : 'text') + (activity ? '-activity' : '');
@@ -530,6 +531,7 @@ export class GlassesDisplay {
     }
     if (this.interrupted(frame)) return;
     this.failure = null; this.recoveryAttempts = 0;
+    if (askReading) this.acceptReading(frame);
     this.acceptedFrame = frame;
     if (this.diagnostics.enabled) this.diagnostics.display.accepted = true;
     this.acceptedAt = performance.now();
@@ -555,7 +557,8 @@ export class GlassesDisplay {
     // Footer-only updates must not restart the visible line/group's clock.
     const changed = !old || old.layout !== frame.layout || old.y !== frame.y || old.mode !== frame.mode || old.playing !== frame.playing
       || old.speed !== frame.speed || old.wordRate !== frame.wordRate || old.nativePdf?.reveal !== frame.nativePdf?.reveal
-      || old.wordFrame?.start !== frame.wordFrame?.start || old.wordFrame?.end !== frame.wordFrame?.end;
+      || old.wordFrame?.start !== frame.wordFrame?.start || old.wordFrame?.end !== frame.wordFrame?.end
+      || old.message?.body !== frame.message?.body || old.message?.paperKey !== frame.message?.paperKey;
     this.readingFrame = frame;
     if (changed) { this.readingAcceptedAt = performance.now(); this.onReadingAccepted?.(frame); }
   }

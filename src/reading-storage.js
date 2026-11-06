@@ -80,6 +80,9 @@ export class ReadingSync {
       const log = this.log(), client = this.client(), scope = this.scope();
       if (!log || !client || !scope) return;
       const index = await client.api('pageborne/reading-activity', { timeoutMs: 10000 });
+      if (index.observations !== 2 && log.entries.some(e => e.version === 2 && e.scope === scope)) {
+        this.status = 'Saved on this device · desktop extension needs updating'; this.changed(); return;
+      }
       const remote = new Map(index.days.map(day => [day.day, day.revision]));
       const local = log.entries.filter(e => e.scope === scope);
       const days = new Set([...remote.keys(), ...local.map(e => e.day)]);
@@ -87,7 +90,7 @@ export class ReadingSync {
         const own = local.filter(e => e.day === day).map(e => ({ ...e, sessions: this.sessions(e) }));
         const signature = JSON.stringify(own), key = `${scope}:${day}`, old = this.synced.get(key);
         if (old?.local === signature && old.remote === remote.get(day)) continue;
-        const result = remote.has(day) ? await client.api(`pageborne/reading-activity/${day}`, { timeoutMs: 10000 }) : { entries: [] };
+        const result = remote.has(day) ? await client.api(`pageborne/reading-activity/${day}`, { timeoutMs: 10000, query: { observations: 2 } }) : { entries: [] };
         const merged = mergeReadingEntries(result.entries, own);
         const byId = new Map(result.entries.map(e => [e.id, JSON.stringify(e)]));
         const upload = merged.filter(e => byId.get(e.id) !== JSON.stringify(e));
@@ -98,7 +101,7 @@ export class ReadingSync {
         }
         // A concurrent device can append between our GET and POST. Read back
         // the acknowledged revision so we never mark unseen events as synced.
-        const confirmed = upload.length ? await client.api(`pageborne/reading-activity/${day}`, { timeoutMs: 10000 }) : result;
+        const confirmed = upload.length ? await client.api(`pageborne/reading-activity/${day}`, { timeoutMs: 10000, query: { observations: 2 } }) : result;
         if (confirmed.revision) revision = confirmed.revision;
         await log.add(mergeReadingEntries(merged, confirmed.entries));
         this.synced.set(key, { local: JSON.stringify(log.entries.filter(e => e.scope === scope && e.day === day).map(e => ({ ...e, sessions: this.sessions(e) }))), remote: revision });

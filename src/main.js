@@ -261,9 +261,10 @@ function readingSessions(entry) {
   }
   return [...new Map(sessions.filter(s => ['claude', 'codex'].includes(s.agent)).map(s => [`${s.agent}:${s.id}`, s])).values()].slice(-100);
 }
-const readingTracker = new ReadingTracker(entry => {
+const recordReading = entry => {
   if (readingLog) void readingLog.add([{ ...entry, sessions: readingSessions(entry) }]).catch(readingSaveError);
-});
+};
+const readingTracker = new ReadingTracker(recordReading), askReadingTracker = new ReadingTracker(recordReading);
 function readingSaveError(error) { notice(`Reading history could not be saved: ${error.message}`, true); }
 const readingSync = new ReadingSync({
   log: () => readingLog, scope: () => readerConnection().chatScope, sessions: readingSessions,
@@ -274,7 +275,7 @@ const syncReading = async () => { await readingLog?.flush().catch(readingSaveErr
 syncReading.status = () => readingSync.status;
 const readingHistory = new ReadingHistoryUI({
   log: () => readingLog, sync: syncReading, sessions: readingSessions,
-  pause: () => { reader.pause(); readingTracker.leave(); },
+  pause: () => { reader.pause(); readingTracker.leave(); askReadingTracker.leave(); },
   exists: entry => entry.scope === (readerConnection().chatScope || '') && snapshot?.documents.some(d => d.id === entry.document.id),
   openDocument: async entry => { await selectDocument(entry.document.id); setLibraryOpen(false, false); },
   conversation: async (entry, session, signal) => {
@@ -286,17 +287,32 @@ const readingHistory = new ReadingHistoryUI({
 $('reading-history-open').onclick = () => void readingHistory.open();
 setInterval(() => { if (libraryReady && !document.hidden) void syncReading(); }, 30000);
 function sampleReading(frame, now = performance.now()) {
-  if (!libraryReady || !readingLog || !active || !layout || !frame) { readingTracker.observe(null, now); return; }
-  const blocked = readingHistory.dialog.open || footnotesView || (glasses.bridge ? !glasses.ready || glasses.suspended || frame.selection !== selectionVersion
-      : document.hidden || previewMenu || frame.selection !== selectionVersion || !fullscreenReader?.active && drawerQuery.matches && $('library-panel').dataset.open === 'true' || !$('shared-settings').hidden);
-  if (blocked) { readingTracker.observe(null, now); return; }
+  const platform = WEB ? 'web' : glasses.bridge ? 'glasses' : 'preview';
+  const blocked = !libraryReady || !readingLog || readingHistory.dialog.open || footnotesView || askUI?.speech.setup.blocked;
+  const displayBlocked = glasses.bridge ? !glasses.ready || glasses.suspended : document.hidden || previewMenu || !$('shared-settings').hidden;
+  let askView = null;
+  if (!blocked && !askUI?.session.dialog()) {
+    const message = frame?.message;
+    if (!displayBlocked && !frame?.dialog && !frame?.modePicker && message?.kind === 'ask' && !message.dialog && message.readingContext && message.readingUnits?.length)
+      askView = { ...message.readingContext, units: message.readingUnits, pane: `glasses:${message.readingPane}`,
+        page: message.readingPage, surface: 'glasses' };
+    // Use one surface at a time. The acknowledged glasses/preview pane takes
+    // precedence when shown; otherwise the phone chat can be read independently.
+    else if ((!askUI?.glassesVisible || displayBlocked) && !document.hidden && $('shared-settings').hidden) askView = askUI?.phoneReadingView();
+  }
+  askReadingTracker.observe(askView ? { ...askView, platform: askView.surface === 'phone' ? WEB ? 'web' : 'preview' : platform } : null, now);
+  if (blocked || displayBlocked || askView || !active || !layout || !frame || frame.selection !== selectionVersion
+    || !glasses.bridge && !fullscreenReader?.active && drawerQuery.matches && $('library-panel').dataset.open === 'true') {
+    readingTracker.observe(null, now); return;
+  }
   const displayed = frame.layout;
-  // Reflow/font/partial-load rebuilds aren't page turns.
-  if (readingLayout !== displayed) { readingTracker.reset(); readingLayout = displayed; }
+  if (readingLayout !== displayed) { readingTracker.leave(now, 'layout'); readingLayout = displayed; }
   if (frame.message || frame.dialog || frame.picker || frame.positionPicker || frame.modePicker) { readingTracker.observe(null, now); return; }
   const units = glassesReadingUnits(frame, frame.layout === reader.pageLayout ? reader.speedReading.entries : undefined), config = readerConnection();
   readingTracker.observe({ document: { id: active.id, key: active.positionKey, title: String(active.title).slice(0, 300), revision: active.revision },
-    scope: config.chatScope || '', platform: WEB ? 'web' : glasses.bridge ? 'glasses' : 'preview',
+    scope: config.chatScope || '', platform,
+    pane: `${frame.mode}:${units[0]?.key ?? `image:${frame.y}`}:${units.at(-1)?.key || ''}`,
+    page: units[0]?.page || layout.blocks?.findLast(block => block.y <= frame.y)?.page,
     position: Math.min(100, Math.max(0, 100 * frame.y / (displayed?.maxY || 1))), units }, now);
 }
 async function preserveReadingSessions(doc) {
@@ -587,6 +603,8 @@ function renderLibraryEstimates() {
   const total = libraryReadingEstimate(documents, average);
   $('library-reading-time').textContent = `${total.duration}${total.unknown && total.duration !== '—' ? '+' : ''}`;
   $('library-reading-speed').textContent = readingSpeedLabel(average);
+  const combined = averageReadingSpeed(readingLog?.entries, { includeAsk: true });
+  $('library-reading-combined-speed').textContent = `Including Ask: ${combined == null ? 'no reading logged yet' : `${Math.round(combined).toLocaleString()} wpm`}`;
   $('library-reading-pending').hidden = !total.unknown;
   $('library-reading-pending').textContent = readingCountsRefresh ? 'Checking desktop word counts…'
     : `${total.unknown} ${total.unknown === 1 ? 'document awaits' : 'documents await'} a word count. Connect to the desktop or open the document to update its reading time.`;
@@ -1707,12 +1725,12 @@ installHoldButton($('preview-speak'), { start: () => askUI.hold('phone'), releas
 document.querySelector('.brand').onclick = event => { event.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); };
 function flushPosition() { rememberPosition(); phonePreferences?.flush(); }
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && (WEB || !glasses.bridge)) readingTracker.observe(null);
+  if (document.hidden && (WEB || !glasses.bridge)) { readingTracker.observe(null); askReadingTracker.observe(null); }
   if (document.hidden && (askUI?.phoneMic.capturing || askUI?.phoneMic.pending)) askUI.close();
   diagnostics.log('visibility', { state: document.visibilityState }); flushPosition();
   if (!document.hidden) { pdfProgressRefresh?.(true); dirty = true; animate(performance.now(), true); }
 });
-window.addEventListener('pagehide', () => { readingTracker.leave(); void readingLog?.flush().catch(readingSaveError); askUI?.cancelPairing(); askUI?.close(); askUI?.speech.dispose(); flushPosition(); });
+window.addEventListener('pagehide', () => { readingTracker.leave(); askReadingTracker.leave(); void readingLog?.flush().catch(readingSaveError); askUI?.cancelPairing(); askUI?.close(); askUI?.speech.dispose(); flushPosition(); });
 window.addEventListener('pageshow', event => { if (event.persisted) voiceStartup = startVoiceSetup(); });
 
 

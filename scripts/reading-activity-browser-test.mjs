@@ -31,7 +31,30 @@ try {
     const vite = await createServer({ mode, cacheDir: `.state/vite-reading-${mode}`, clearScreen: false,
       plugins: [{ name: 'reading-test', transform(code, id) {
         if (id.endsWith('/src/speech-setup.js')) return code.replace('start(initialize) {', 'start(initialize) { this.blocked = false; return Promise.resolve();');
-        if (id.endsWith('/src/main.js')) return code + '\nwindow.__reading = { get entries() { return readingLog?.entries || []; }, get units() { return [...readingTracker.units.values()].map(({key,words,text}) => ({key,words,text})); }, add: entries => readingLog.add(entries), sync: syncReading, remove: deleteDocument, next: () => { reader.pageStep(1); }, get position() { return reader.y; } };';
+        if (id.endsWith('/src/main.js')) return code + `
+          import { readingTotals as testTotals } from './reading-metrics.js';
+          window.__reading = {
+            get entries() { return readingLog?.entries || []; },
+            get words() { return testTotals(readingLog?.entries).words; },
+            get askWords() { return testTotals(readingLog?.entries, { kind: 'ask' }).words; },
+            get units() { return [...readingTracker.units.values()].map(({key,words,text}) => ({key,words,text})); },
+            get askUnits() { return [...askReadingTracker.units.values()]; },
+            get askPane() { return askReadingTracker.pane; },
+            add: entries => readingLog.add(entries), sync: syncReading, remove: deleteDocument,
+            next: () => reader.pageStep(1), get position() { return reader.y; },
+            ask: () => {
+              askUI.open();
+              const turns = [{ id: 'reading-answer', question: 'Please explain this passage.',
+                answer: 'The explanation connects these ideas with a detailed example. '.repeat(100), readThrough: 0, state: 'complete' }];
+              askUI.chat.cache.set(askUI.paperKey, turns); askUI.session.syncConversation(turns, 'unread');
+              askUI.session.setStatus('answer'); askUI.render(); dirty = true;
+            },
+            askNext: () => { askUI.session.move(1); dirty = true; },
+            phoneAsk: () => { askUI.glassesVisible = false; askUI.reveal(); askUI.render();
+              document.querySelector('#ask-question').blur(); document.querySelector('#ask-history').scrollTop = 0; dirty = true; },
+            closeAsk: () => { askUI.close(); dirty = true; },
+          };`;
+
       }, configureServer(server) { server.middlewares.use('/web/config', (req, res) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ mode: 'terminal', endpoint: `http://${req.headers.host}`, token: 'fixture', agent: 'claude' })); }); } }],
       server: { host: '127.0.0.1', port: 5173, strictPort: true, hmr: false, watch: null, proxy: { '/api': `http://127.0.0.1:${backend.address().port}` } } });
     await vite.listen();
@@ -65,14 +88,44 @@ try {
       await page.locator('[data-document-id="paper.md"] .document-card').click();
       await page.evaluate(() => window.__reading.sync());
       await expect.poll(() => page.evaluate(() => window.__reading.units.length)).toBeGreaterThan(10);
-      const initial = await page.evaluate(() => window.__reading.entries.reduce((n, e) => n + e.words, 0));
+      const initial = await page.evaluate(() => window.__reading.words);
       await page.waitForTimeout(6500);
       await page.evaluate(() => window.__reading.next());
-      await expect.poll(() => page.evaluate(() => window.__reading.entries.reduce((n, e) => n + e.words, 0))).toBeGreaterThan(initial);
-      const read = await page.evaluate(() => window.__reading.entries.reduce((n, e) => n + e.words, 0));
+      await expect.poll(() => page.evaluate(() => window.__reading.words)).toBeGreaterThan(initial);
+      const read = await page.evaluate(() => window.__reading.words);
       await page.evaluate(() => window.__reading.next());
       await page.waitForTimeout(400);
-      assert.ok(await page.evaluate(() => window.__reading.entries.reduce((n, e) => n + e.words, 0)) <= read + 15, 'fast paging cannot credit a whole screen');
+      assert.ok(await page.evaluate(() => window.__reading.words) <= read + 15, 'fast paging cannot credit a whole screen');
+      // Track acknowledged Ask panes with the same rate filter, independently
+      // of document totals, and preserve the too-fast pane in the raw log.
+      const docBeforeAsk = await page.evaluate(() => window.__reading.words), askBefore = await page.evaluate(() => window.__reading.askWords);
+      await page.evaluate(() => window.__reading.ask());
+      await expect.poll(() => page.evaluate(() => window.__reading.askUnits.length)).toBeGreaterThan(10);
+      await page.waitForTimeout(8000);
+      await page.evaluate(() => window.__reading.askNext());
+      await expect.poll(() => page.evaluate(() => window.__reading.askWords)).toBeGreaterThan(askBefore + 10);
+      const askBeforeFast = await page.evaluate(() => window.__reading.askWords);
+      await page.waitForTimeout(200);
+      await page.evaluate(() => window.__reading.askNext());
+      await page.waitForTimeout(300);
+      assert.ok(await page.evaluate(() => window.__reading.askWords) <= askBeforeFast + 15);
+      assert.ok(Math.abs(await page.evaluate(() => window.__reading.words) - docBeforeAsk) < 15);
+      assert.ok((await page.evaluate(() => window.__reading.entries.filter(e => e.kind === 'ask'))).length >= 2);
+      // The ordinary phone chat also counts clipped visible words, not the
+      // offscreen answer or speaker/tool/status labels.
+      await page.evaluate(() => window.__reading.phoneAsk());
+      await expect.poll(() => page.evaluate(() => window.__reading.askPane?.platform)).toBe(mode === 'web' ? 'web' : 'preview');
+      await expect.poll(() => page.evaluate(() => window.__reading.askUnits.length)).toBeGreaterThan(10);
+      const phoneWords = await page.evaluate(() => window.__reading.askUnits.length);
+      assert.ok(phoneWords < 900, 'only the visible part of the long answer is measured');
+      await page.waitForTimeout(Math.max(6000, phoneWords * 100));
+      await page.locator('#ask-history').evaluate(el => el.scrollTop += el.clientHeight);
+      await page.locator('#ask-question').focus();
+      await expect.poll(() => page.evaluate(() => window.__reading.askPane)).toBeNull();
+      await page.waitForTimeout(200);
+      await page.locator('#ask-question').blur();
+      await page.waitForTimeout(300);
+      await page.evaluate(() => window.__reading.closeAsk());
       await page.evaluate(() => window.__reading.sync());
       if (await page.locator('#library-panel').getAttribute('data-open') !== 'true') await page.locator('#library-toggle').click();
       await page.locator('#reading-history-open').click();
@@ -80,7 +133,15 @@ try {
       await expect(page.locator('.reading-total')).not.toHaveText('0 words');
       const speed = await page.locator('#library-reading-speed').textContent();
       assert.match(speed, /^Your average: [\d,]+ wpm$/);
-      await expect(page.locator('.reading-average')).toHaveText(`${speed} · all recorded reading`);
+      await expect(page.locator('.reading-average')).toHaveText(`${speed} · documents only`);
+      await expect(page.locator('.reading-combined-average')).toContainText('Including Ask:');
+      await expect(page.locator('.reading-times')).toContainText('reading Ask');
+      await page.locator('.reading-view-log summary').first().click();
+      await expect(page.locator('.reading-view-log[open]')).toContainText('Start');
+      await expect(page.locator('.reading-view-log[open] time').first()).toHaveAttribute('datetime', /T/);
+      await expect(page.locator('.reading-view-log[open]')).toContainText('End');
+      await page.screenshot({ path: `test-results/reading-activity/${mode}-views.png` });
+      await page.locator('#reading-history').evaluate(el => el.scrollTop = 0);
       await page.screenshot({ path: `test-results/reading-activity/${mode}-history.png` });
       await page.locator('#reading-history').getByRole('button', { name: 'Close', exact: true }).click();
       await page.evaluate(() => window.__reading.remove('paper.md'));
@@ -100,7 +161,7 @@ try {
       const groupedDay = mode === 'web' ? '2000-01-03' : '2000-01-02';
       await page.evaluate(async ({ day, mode }) => {
         const source = window.__reading.entries.find(e => e.document.id === 'paper.md');
-        const entry = (id, hour, second, extra = {}) => ({ ...source, id: `grouped-${mode}-${id}`, day,
+        const entry = (id, hour, second, extra = {}) => ({ ...source, id: `grouped-${mode}-${id}`, version: undefined, kind: 'document', day,
           at: `${day}T${hour}:00:${String(second).padStart(2, '0')}.000Z`, endedAt: `${day}T${hour}:01:00.000Z`, words: 1, seconds: 1, ...extra });
         await window.__reading.add([
           entry('earliest', '10', 0, { words: 3 }),

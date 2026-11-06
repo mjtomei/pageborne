@@ -2,6 +2,7 @@ import { getTextWidth } from '@evenrealities/pretext';
 import { nativeLayout, LINE_HEIGHT, VISIBLE_LINES, byteLength, TEXT_BYTES, measureNativeText } from './native-text.js';
 import { parseDocument, rowAt, WIDTH, MARGIN } from './document.js';
 import { chatMessages } from './ask-activity.js';
+import { readingWords, readingUnitKey } from './reading-activity.js';
 
 const RIGHT_EDGE = WIDTH - 2 * MARGIN - 8;
 export const MESSAGE_WIDTH = RIGHT_EDGE - 64;
@@ -50,6 +51,11 @@ export class AskConversation {
         let plain = '';
         for (const row of message.rows) {
           row.readStart = plain.length; plain += row.text.replace(/\s/g, ''); row.readEnd = plain.length;
+          let offset = row.readStart;
+          row.readingUnits = role === 'activity' ? [] : [...row.text.matchAll(/\S+/g)].flatMap(match => {
+            const start = offset; offset += match[0].length;
+            return readingWords(match[0]) ? [{ key: readingUnitKey(key, start, match[0]), words: 1, text: match[0] }] : [];
+          });
         }
         message.plain = plain; message.turnId = turn.id;
         if (role === 'assistant' && previous && Number.isFinite(turn.readThrough)) {
@@ -162,6 +168,7 @@ export class AskConversation {
     }
     return { start, end, content: '\n'.repeat(padding) + lines.join('\n') || ' ',
       readReceipts: [...seen.values()],
+      readingUnits: this.layout.rows.slice(start, end).flatMap(row => row.readingUnits),
       page: page + 1, pages: this.pageStarts.length,
       alignments: [...Array(padding).fill(null), ...this.layout.rows.slice(start, end).map(row => this.cache.get(row.message).role)],
       nextY: (this.pageStarts[page + 1] ?? start) * LINE_HEIGHT,

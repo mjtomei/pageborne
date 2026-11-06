@@ -215,7 +215,8 @@ export class AskSession {
       statusLeft: status === 'thinking' ? titleText(this.progressText || `${partial ? 'Writing' : 'Thinking'}${dots}`, 260) : status === 'error' ? this.errorKind === 'timeout' ? 'Request timed out' : `${label} error` : label,
       statusRight: 'Hold: speak · Tap: back',
       statusCenter: conversationFrame?.page ? `${conversationFrame.page} / ${conversationFrame.pages}` : '',
-      ...(conversationFrame ? { alignments: conversationFrame.alignments, readReceipts: conversationFrame.readReceipts } : {}), ...(dialog ? { dialog } : {}) };
+      ...(conversationFrame ? { alignments: conversationFrame.alignments, readReceipts: conversationFrame.readReceipts,
+        readingUnits: conversationFrame.readingUnits, readingPane: conversationFrame.start, readingPage: conversationFrame.page } : {}), ...(dialog ? { dialog } : {}) };
   }
 }
 

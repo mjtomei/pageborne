@@ -15,6 +15,7 @@ import { SpeechUI } from './speech-ui.js';
 import { formatSpokenFilenames } from '@pageborne/browser-stt';
 import { BrowserMicrophone } from './browser-microphone.js';
 import { AskKeyboard } from './ask-keyboard.js';
+import { AskPhoneReadingView } from './ask-reading-view.js';
 import { ChatScrollbar } from './chat-scrollbar.js';
 import { MAX_QUESTION_CHARS } from './ask-limits.js';
 import { ASK_AGENTS, askScopeKey, askChatKey, defaultAskAgent, retainAskModels, askConfigFor } from './ask-models.js';
@@ -292,7 +293,22 @@ export class AskUI {
     if (revealUnread) { this.session.syncConversation(this.chat.turns(this.paperKey), 'unread'); this.changed(); }
     $('ask-question').value = this.modelDrafts.get(this.paperKey) || ''; this.resizeQuestion(); void this.pollFooter(); return true;
   }
-  frame() { return { ...this.session.frame(), paperKey: this.paperKey }; }
+  readingContext() {
+    const binding = this.binding();
+    return { kind: 'ask', scope: this.config.chatScope || '',
+      document: { id: this.paperId ? this.snapshot().document?.id || 'document' : this.terminalSession ? 'terminal-session' : 'librarian',
+        key: this.paperKey, title: String(this.session.context?.title || 'Ask').slice(0, 300),
+        revision: binding.sessionId || 'local' },
+      sessions: binding.sessionId && ['claude', 'codex'].includes(this.config.agent)
+        ? [{ agent: this.config.agent, id: binding.sessionId, ...(binding.cwd ? { cwd: binding.cwd } : {}) }] : [] };
+  }
+  phoneReadingView() {
+    if (!this.phoneVisible || !this.session.active || document.hidden || this.session.dialog()
+      || $('ask-panel').hidden || $('ask-question') === document.activeElement) return null;
+    const view = (this.readingPhone ||= new AskPhoneReadingView()).sample($('ask-history'), this.renderedChat);
+    return view && { ...this.readingContext(), ...view, surface: 'phone' };
+  }
+  frame() { return { ...this.session.frame(), paperKey: this.paperKey, readingContext: this.readingContext() }; }
   acceptFrame(frame) {
     const message = frame.message;
     if (!this.glassesVisible || frame.modePicker || message?.kind !== 'ask' || message.paperKey !== this.paperKey) return;

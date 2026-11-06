@@ -4,65 +4,70 @@ export const MIN_READING_WPM = 10, MAX_READING_WPM = 900, MAX_VIEW_SECONDS = 300
 export const readingDay = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 export const readingWords = text => (String(text || '').match(/\S*[\p{L}\p{N}]\S*/gu) || []).length;
 
+// Store observations before applying any reading-speed/idle filter. Each raw
+// pane retains per-word exposure, so overlapping windows can be re-evaluated
+// without counting their shared words twice. A pause ends an exposure interval.
+// Compact word identities avoid copying long URLs or command arguments into
+// every view record. This hash is only a local identity, not a security hash.
+export function readingUnitKey(prefix, offset, word) {
+  let hash = 2166136261;
+  for (let i = 0; i < word.length; i++) hash = Math.imul(hash ^ word.charCodeAt(i), 16777619);
+  return `${prefix}:${offset}:${word.length}:${hash >>> 0}`;
+}
+
 export class ReadingTracker {
   constructor(record, { clock = () => performance.now(), date = () => new Date(), id = () => crypto.randomUUID() } = {}) {
     Object.assign(this, { record, clock, date, id }); this.units = new Map();
   }
+  start(view, at) {
+    this.pane = { id: this.id(), version: 2, kind: view.kind || 'document', run: this.run, viewId: this.viewId,
+      day: readingDay(new Date(at)), at, endedAt: at, words: 0, seconds: 0, maxGapSeconds: 0,
+      document: { ...view.document }, scope: view.scope || '', platform: view.platform,
+      position: view.position || 0, ...(view.page ? { page: view.page } : {}),
+      excerpt: view.units.map(u => u.text || '').join(' ').slice(0, 240), sessions: view.sessions || [] };
+    this.exposures = new Map();
+    this.includeUnits();
+  }
+  includeUnits() {
+    for (const u of this.units.values()) if (!this.exposures.has(u.key)) this.exposures.set(u.key, [u.key, u.words, 0]);
+  }
   accrue(now) {
-    const elapsed = this.last == null ? 0 : (now - this.last) / 1000;
-    this.last = now;
-    // Accepted glasses text remains readable while phone timers are delayed.
-    // Web timer suspension does not establish attention. A stable view left
-    // unattended for five minutes is discarded, including its earlier dwell.
-    if (!this.visible || elapsed <= 0) return;
-    this.dwell += elapsed;
-    if (this.dwell > MAX_VIEW_SECONDS || elapsed > 30 && this.units.values().next().value?.view.platform !== 'glasses') {
-      for (const unit of this.units.values()) unit.expired = true;
-      return;
-    }
-    const total = [...this.units.values()].reduce((sum, unit) => sum + unit.words, 0);
-    if (!total) return;
+    const elapsed = this.last == null ? 0 : Math.max(0, (now - this.last) / 1000); this.last = now;
+    if (!this.pane || !elapsed) return;
     const end = this.date().getTime(); let start = end - elapsed * 1000;
+    const total = [...this.units.values()].reduce((n, u) => n + u.words, 0);
     while (start < end) {
-      const date = new Date(start), midnight = new Date(date); midnight.setHours(24, 0, 0, 0);
-      const until = Math.min(end, midnight.getTime()), day = readingDay(date), seconds = (until - start) / 1000;
-      for (const unit of this.units.values()) unit.time[day] = (unit.time[day] || 0) + seconds * unit.words / total;
+      if (this.pane.day !== readingDay(new Date(start))) { this.emit('midnight'); this.start(this.view, new Date(start).toISOString()); }
+      const midnight = new Date(start); midnight.setHours(24, 0, 0, 0);
+      const until = Math.min(end, midnight.getTime()), seconds = (until - start) / 1000;
+      this.pane.seconds += seconds; this.pane.maxGapSeconds = Math.max(this.pane.maxGapSeconds, elapsed);
+      for (const u of this.units.values()) this.exposures.get(u.key)[2] += total ? seconds * u.words / total : 0;
+      this.pane.endedAt = new Date(until).toISOString();
+      if (until < end) { this.emit('midnight'); this.start(this.view, new Date(until).toISOString()); }
       start = until;
     }
   }
   observe(view, now = this.clock()) {
     this.accrue(now);
-    if (!view) { this.visible = false; return; }
-    const identity = `${view.scope || ''}\n${view.document.key}\n${view.document.revision || ''}`;
-    if (this.identity !== identity) { this.finish(); this.identity = identity; }
-    const next = new Map(view.units.filter(u => u.words > 0).map(u => [u.key, u]));
-    const departed = [...this.units.values()].filter(u => !next.has(u.key));
-    this.emit(departed);
-    for (const unit of departed) this.units.delete(unit.key);
-    if (departed.length || next.size !== this.units.size) this.dwell = 0;
-    for (const [key, unit] of next) if (!this.units.has(key)) this.units.set(key, { ...unit, time: {}, at: this.date().toISOString(), view });
-    this.visible = true; this.last = now; this.dwell ||= 0;
+    if (!view) { this.emit('pause'); return; }
+    const identity = `${view.kind || 'document'}\n${view.scope || ''}\n${view.document.key}\n${view.document.revision || ''}\n${view.platform}\n${view.surface || ''}`;
+    const paneKey = String(view.pane ?? view.position ?? 0);
+    if (this.identity !== identity) { this.emit('source'); this.run = this.id(); this.identity = identity; this.paneKey = null; }
+    if (this.paneKey !== paneKey) { this.emit('page'); this.viewId = this.id(); this.paneKey = paneKey; }
+    this.view = view;
+    this.units = new Map(view.units.filter(u => u.words > 0).map(u => [u.key, u]));
+    if (!this.pane) this.start(view, this.date().toISOString()); else this.includeUnits();
+    this.last = now;
   }
-  emit(units) {
-    const eligible = units.filter(u => {
-      const seconds = Object.values(u.time).reduce((a, b) => a + b, 0), wpm = 60 * u.words / seconds;
-      return !u.expired && seconds > 0 && wpm >= MIN_READING_WPM && wpm <= MAX_READING_WPM;
-    });
-    const days = new Set(eligible.flatMap(u => Object.keys(u.time)));
-    for (const day of days) {
-      const parts = eligible.filter(u => u.time[day] > 0);
-      const first = parts[0], view = first.view;
-      const words = parts.reduce((sum, u) => sum + u.words * u.time[day] / Object.values(u.time).reduce((a, b) => a + b, 0), 0);
-      const seconds = parts.reduce((sum, u) => sum + u.time[day], 0);
-      this.record({ id: this.id(), day, at: first.at, endedAt: this.date().toISOString(),
-        words, seconds, document: view.document, scope: view.scope || '', platform: view.platform,
-        position: view.position || 0, ...(first.page ? { page: first.page } : {}),
-        excerpt: parts.map(u => u.text).join(' ').slice(0, 240), sessions: view.sessions || [] });
-    }
+  emit(reason) {
+    if (!this.pane) return;
+    const units = [...this.exposures.values()];
+    this.record({ ...this.pane, words: units.reduce((n, u) => n + u[1], 0), units, reason });
+    this.pane = null;
   }
-  finish() { this.emit([...this.units.values()]); this.reset(); }
-  leave(now = this.clock()) { this.accrue(now); this.finish(); }
-  reset() { this.units.clear(); this.visible = false; this.last = null; this.identity = null; this.dwell = 0; }
+  finish(reason = 'leave') { this.emit(reason); this.units.clear(); this.last = null; this.identity = null; this.paneKey = null; }
+  leave(now = this.clock(), reason = 'leave') { this.accrue(now); this.finish(reason); }
+  reset() { this.leave(this.clock(), 'layout'); }
 }
 
 export function mergeReadingEntries(previous = [], incoming = []) {

@@ -1,10 +1,12 @@
 import { readingDay } from './reading-activity.js';
 import { averageReadingSpeed, readingSpeedLabel } from './reading-estimates.js';
+import { acceptedReadingEntries, readingTotals } from './reading-metrics.js';
 import { groupReadingEntries, readingGroupLocation } from './reading-history-groups.js';
 import { safeMarkdown } from './safe-markdown.js';
 import { marked } from 'marked';
 import './reading-history.css';
 
+const duration = seconds => `${Math.floor(Math.round(seconds) / 60).toLocaleString()} min ${Math.round(seconds) % 60} s`;
 const number = value => Math.round(value).toLocaleString();
 const node = (tag, text, className) => { const el = document.createElement(tag); if (text != null) el.textContent = text; if (className) el.className = className; return el; };
 export class ReadingHistoryUI {
@@ -26,11 +28,30 @@ export class ReadingHistoryUI {
     if (!this.dialog.open || this.chat) return;
     this.body.replaceChildren();
     const entries = this.log()?.entries || [], totals = new Map();
-    for (const e of entries) totals.set(e.day, (totals.get(e.day) || 0) + e.words);
-    const selected = groupReadingEntries(entries.filter(e => e.day === this.day));
+    const accepted = new Map(acceptedReadingEntries(entries).map(e => [e.id, e]));
+    for (const e of accepted.values()) if (e.kind !== 'ask') totals.set(e.day, (totals.get(e.day) || 0) + e.words);
+    const selected = groupReadingEntries(entries.filter(e => e.day === this.day).map(e => ({ ...e,
+      rawWords: e.words, rawSeconds: e.seconds, words: accepted.get(e.id)?.words || 0, seconds: accepted.get(e.id)?.seconds || 0 })));
+
     this.body.append(node('p', `${number(totals.get(this.day) || 0)} words`, 'reading-total'));
     const average = averageReadingSpeed(entries);
-    this.body.append(node('p', average == null ? 'Your average: no reading logged yet' : `${readingSpeedLabel(average)} · all recorded reading`, 'reading-average muted'));
+    this.body.append(node('p', average == null ? 'Your average: no reading logged yet' : `${readingSpeedLabel(average)} · documents only`, 'reading-average muted'));
+    const combined = averageReadingSpeed(entries, { includeAsk: true });
+    this.body.append(node('p', `Including Ask: ${combined == null ? 'no reading logged yet' : `${number(combined)} wpm`} · all recorded reading`, 'reading-combined-average muted'));
+    const docTime = readingTotals(entries, { day: this.day }), askTime = readingTotals(entries, { kind: 'ask', day: this.day });
+    this.body.append(node('p', `This day: ${duration(docTime.seconds)} reading documents + ${duration(askTime.seconds)} reading Ask`, 'reading-times muted'));
+    const exportLog = node('button', 'Export viewing log');
+    exportLog.onclick = async () => {
+      const blob = new Blob([JSON.stringify({ version: 2, exportedAt: new Date().toISOString(), entries: this.log()?.entries || [] }, null, 2)], { type: 'application/json' });
+      const file = new File([blob], `pageborne-reading-${this.day}.json`, { type: 'application/json' });
+      if (navigator.canShare?.({ files: [file] })) {
+        try { await navigator.share({ files: [file], title: 'Pageborne viewing log' }); } catch (error) { if (error.name !== 'AbortError') exportLog.textContent = 'Could not share log. Try again.'; }
+        return;
+      }
+      const url = URL.createObjectURL(blob), link = node('a'); link.href = url; link.download = `pageborne-reading-${this.day}.json`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    };
+    this.body.append(exportLog);
     const label = node('label', 'Day '), date = node('input'); date.type = 'date'; date.value = this.day; date.max = readingDay(new Date());
     date.onchange = () => { if (/^\d{4}-\d{2}-\d{2}$/.test(date.value)) { this.day = date.value; this.limit = 50; this.render(); } }; label.append(date); this.body.append(label);
     const chart = node('div', null, 'reading-chart'); chart.setAttribute('role', 'group'); chart.setAttribute('aria-label', 'Words read per day, 30 days ending on the selected day');
@@ -44,16 +65,32 @@ export class ReadingHistoryUI {
       bar.onclick = () => { this.day = day; this.limit = 50; this.render(); }; chart.append(bar);
     }
     this.body.append(chart, node('p', `${days[0]} — ${days.at(-1)} · peak ${number(max === 1 && !totals.size ? 0 : max)} words/day`, 'muted'),
-      node('p', 'Estimated from text shown and then moved past at 10–900 words/minute. Fast paging, image-only views and views idle for over five minutes do not count. Rereading counts again. Days use the device’s local date.', 'reading-explanation muted'),
+      node('p', 'Estimated from text shown and then moved past at 10–900 words/minute. Both averages use the same filter. Fast paging, image-only views and views idle for over five minutes do not count. The graph counts documents only; Ask includes visible questions and answers, excluding typing, recording and activity/status text. Rereading counts again. Days use the device’s local date.', 'reading-explanation muted'),
+      node('p', 'Every new pane view is kept with start/end times, including excluded views. Expand a viewing log below or export the data. Older history contains only readings accepted at the time.', 'reading-explanation muted'),
       node('p', this.sync.status?.() || 'Saved on this device', 'muted'));
     if (!selected.length) this.body.append(node('p', 'No reading logged for this day yet. Read some text, then move on to the next page or document.', 'reading-empty'));
     const list = node('ol', null, 'reading-entries');
     for (const entry of selected.slice(0, this.limit)) {
-      const time = at => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const time = at => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
       const start = time(entry.startedAt), end = time(entry.endedAt);
-      const item = node('li'), heading = node('h3', entry.document.title), metadata = node('p', `${number(entry.words)} words · ${readingGroupLocation(entry)} · ${start === end ? start : `${start}–${end}`} · ${entry.platforms.join(', ')}`, 'muted');
+      const item = node('li'), heading = node('h3', `${entry.kind === 'ask' ? 'Ask · ' : ''}${entry.document.title}`), metadata = node('p', `${number(entry.words)} words · ${readingGroupLocation(entry)} · ${start}–${end} · ${entry.platforms.join(', ')}`, 'muted');
       item.append(heading, metadata);
       if (entry.count === 1) item.append(node('p', entry.excerpt, 'reading-excerpt'));
+      const details = node('details', null, 'reading-view-log'), summary = node('summary', `Viewing log · ${entry.count} ${entry.count === 1 ? 'view' : 'views'}`);
+      details.append(summary);
+      // Lazy rendering keeps a long day's unfiltered log inexpensive on phones.
+      details.ontoggle = () => {
+        if (!details.open || details.children.length > 1) return;
+        for (const view of [...entry.views].reverse()) {
+          const row = node('p', null, 'muted');
+          const start = node('time', time(view.at)), end = node('time', time(view.endedAt));
+          start.dateTime = view.at; end.dateTime = view.endedAt; start.title = view.at; end.title = view.endedAt;
+          row.append(`${view.page ? `Page ${view.page}` : `${number(view.position)}%`} · Start `, start, ' · End ', end,
+            ` · ${duration(view.rawSeconds)} · ${number(view.rawWords)} words shown · ${number(view.words)} counted${view.version === 2 ? '' : ' · legacy record'}`);
+          details.append(row);
+        }
+      };
+      item.append(details);
       const actions = node('div', null, 'reading-entry-actions');
       if (this.exists(entry)) {
         const read = node('button', 'Open document'); read.onclick = () => { this.dialog.close(); this.openDocument(entry); }; actions.append(read);
