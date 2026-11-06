@@ -477,7 +477,11 @@ function updatePickerContext() {
   }
 }
 
-function libraryDocuments() { return orderedDocuments(snapshot?.documents, preferences); }
+function documentsWithReadingCounts() {
+  return (snapshot?.documents || []).map(doc => documentReadingWords(doc) == null && fetchedReadingWords.has(doc.sha256)
+    ? { ...doc, readingWords: fetchedReadingWords.get(doc.sha256) } : doc);
+}
+function libraryDocuments() { return orderedDocuments(documentsWithReadingCounts(), preferences); }
 function refreshDocumentPicker() {
   if (picker?.kind === 'terminal-sessions') return;
   if (!picker && active) return;
@@ -589,8 +593,7 @@ function renderLibrary() {
   renderLibraryEstimates(); renderDeleteStatus();
 }
 function renderLibraryEstimates() {
-  const average = averageReadingSpeed(readingLog?.entries), documents = (snapshot?.documents || []).map(doc =>
-    documentReadingWords(doc) == null && fetchedReadingWords.has(doc.sha256) ? { ...doc, readingWords: fetchedReadingWords.get(doc.sha256) } : doc);
+  const average = averageReadingSpeed(readingLog?.entries), documents = documentsWithReadingCounts();
   const byId = new Map(documents.map(doc => [doc.id, doc]));
   for (const entry of $('documents').children) {
     const doc = byId.get(entry.dataset.documentId), estimate = entry.querySelector('.document-reading-time');
@@ -623,7 +626,7 @@ async function refreshReadingCounts() {
     // Still show verified counts if the native store refuses persistence.
     // The digest prevents counts surviving a replacement with different bytes.
     for (const update of updates) fetchedReadingWords.set(update.expected.sha256, update.readingWords);
-    renderLibraryEstimates();
+    readingCountsChanged();
     if (updates.length) {
       const result = await target.updateMetadata(updates); snapshot = result.snapshot;
       diagnostics.log('library-word-counts', { updated: updates.length });
@@ -634,13 +637,17 @@ async function refreshReadingCounts() {
   return readingCountsRefresh;
 }
 function readingLogChanged() { readingHistory.render(); renderLibraryEstimates(); }
+function readingCountsChanged() {
+  if (librarySort(preferences.librarySort) === 'time') { renderLibrary(); refreshDocumentPicker(); }
+  else renderLibraryEstimates();
+}
 async function cacheReadingWords(doc, words) {
   if (words == null || doc.readingWords === words || !store.updateMetadata) return;
   try {
     const result = await store.updateMetadata([{ id: doc.id, expected: doc, readingWords: words }]);
     snapshot = result.snapshot;
     if (active?.id === doc.id && active.revision === doc.revision) active.readingWords = words;
-    renderLibraryEstimates();
+    readingCountsChanged();
   } catch (error) { diagnostics.error('reading-estimate-save-error', error); }
 }
 function openFromPhone(id) {

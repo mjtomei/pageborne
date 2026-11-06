@@ -39,7 +39,7 @@
         <div id="library-help-content">
           <p class="muted">Add Markdown, plain text or PDF files from your phone. Your library is saved on this device. Tap a document to read it on your glasses, then use the glasses or the controls in the app to navigate.</p>
           <p class="muted">Keep reading while files are being added. Open any file once it's added.</p>
-          <p class="muted">Sort by recently opened, newest added, or file name. The glasses document picker uses the same choice.</p>
+          <p class="muted">Sort by recent activity, newest added, file name, or reading time (shortest first). Reading times use your average speed; documents without a word count appear last. The glasses document picker uses the same choice.</p>
           <p id="library-sync-help" class="muted">Use the replay button beside Library to sync all PDFs, Markdown and text files with the shared desktop folder through your Even Terminal connection. In the glasses document picker, hold to sync. Select Librarian for a conversation across the shared library.</p>
           <p class="muted">Additions, edits and deletions transfer both ways. Conflicting edits keep both copies; previous synced versions remain in the desktop folder’s hidden .pageborne/history directory. Ask uses this same library. Stock Terminal needs the optional Pageborne library extension.</p>
         </div>
@@ -53,6 +53,7 @@
             <option value="recent">Recent activity</option>
             <option value="added">Newest added</option>
             <option value="name">File name A–Z</option>
+            <option value="time">Reading time — shortest first</option>
           </select>
         </label>
         <div id="documents" class="documents"></div>

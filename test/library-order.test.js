@@ -20,6 +20,20 @@ test('legacy undated files keep stable order without fabricated current timestam
   assert.deepEqual(ids(docs, { librarySort: 'name' }), ['chapter2.md', 'chapter10.md', 'last.md']);
   assert.deepEqual(localSnapshot({ documents: docs }).documents.map(d => d.addedAt), [undefined, undefined, undefined]);
 });
+test('reading time orders known text lengths first, including zero, and updates when PDF counts arrive', () => {
+  const docs = [
+    { id: 'chapter10.pdf', format: 'pdf', words: 0 },
+    { id: 'long.md', words: 500 },
+    { id: 'chapter2.pdf', format: 'pdf', words: 0 },
+    { id: 'short.txt', words: 100 },
+    { id: 'empty.pdf', format: 'pdf', readingWords: 0 },
+    { id: 'prepared.pdf', format: 'pdf', words: 0, readingWords: 300 },
+  ];
+  const prefs = { librarySort: 'time', recent: ['long.md'] };
+  assert.deepEqual(ids(docs, prefs), ['empty.pdf', 'short.txt', 'prepared.pdf', 'long.md', 'chapter2.pdf', 'chapter10.pdf']);
+  docs[0].readingWords = 50;
+  assert.deepEqual(ids(docs, prefs), ['empty.pdf', 'chapter10.pdf', 'short.txt', 'prepared.pdf', 'long.md', 'chapter2.pdf']);
+});
 test('saved dates survive replacement and metadata updates never overwrite concurrent content', () => {
   const original = { id: 'book.txt', title: 'Book', content: 'First', bytes: 5, addedAt: 10, modifiedAt: 8 };
   const added = addDocument(null, original);

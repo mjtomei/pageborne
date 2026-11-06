@@ -44,12 +44,13 @@ try {
         await page.goto(server.resolvedUrls.local[0]);
         await expect(page.locator('#import')).toBeEnabled();
         await expect(page.locator('#library-sort')).toHaveValue('recent');
-        for (const [name, title] of [['chapter10.md', 'Alpha'], ['appendix.md', 'Middle'], ['chapter2.md', 'Zulu']]) {
-          await page.locator('#file-picker').setInputFiles({ name, mimeType: 'text/markdown', buffer: Buffer.from(`# ${title}\n\nSample text.`) });
+        for (const [name, title, length] of [['chapter10.md', 'Alpha', 10], ['appendix.md', 'Middle', 300], ['chapter2.md', 'Zulu', 150]]) {
+          await page.locator('#file-picker').setInputFiles({ name, mimeType: 'text/markdown', buffer: Buffer.from(`# ${title}\n\n${'Sample text. '.repeat(length)}`) });
           await expect(page.locator(`[data-document-id="${name}"]`)).toBeVisible();
         }
         const added = ['chapter2.md', 'appendix.md', 'chapter10.md'];
         const alphabetic = ['appendix.md', 'chapter2.md', 'chapter10.md'];
+        const readingTime = ['chapter10.md', 'chapter2.md', 'appendix.md'];
         await expect.poll(order).toEqual(added);
         for (const id of ['chapter10.md', 'chapter2.md']) {
           await page.locator(`[data-document-id="${id}"] .document-card`).click();
@@ -62,23 +63,22 @@ try {
           await page.evaluate(() => window.dispatchEvent(new CustomEvent('evenHubEvent', { detail: { menuItemClickEvent: { itemID: 7 } } })));
           await expect.poll(picker).toEqual({ ids: recent, selected: 'chapter2.md' });
         }
-        for (const [sort, expected] of [['added', added], ['name', alphabetic], ['recent', recent]]) {
+        for (const [sort, expected] of [['added', added], ['name', alphabetic], ['recent', recent], ['time', readingTime]]) {
           await page.locator('#library-sort').selectOption(sort);
           await expect.poll(order).toEqual(expected);
           if (platform === 'glasses') await expect.poll(picker).toEqual({ ids: expected, selected: 'chapter2.md' });
           await expect(page.locator('#doc-path')).toHaveText('chapter2.md');
         }
         await page.locator('#filter').fill('chapter');
-        await expect.poll(order).toEqual(recent.slice(0, 2));
-        await page.locator('#library-sort').selectOption('added');
+        await expect.poll(order).toEqual(readingTime.slice(0, 2));
         await page.locator('#filter').fill('');
-        await expect.poll(order).toEqual(added);
+        await expect.poll(order).toEqual(readingTime);
         // A new browser origin must recover the native phone preference too.
         await page.waitForTimeout(700);
         if (platform === 'glasses') await page.evaluate(() => localStorage.clear());
         await page.reload(); await expect(page.locator('#import')).toBeEnabled(); await showLibrary(page);
-        await expect(page.locator('#library-sort')).toHaveValue('added');
-        await expect.poll(order).toEqual(added);
+        await expect(page.locator('#library-sort')).toHaveValue('time');
+        await expect.poll(order).toEqual(readingTime);
         // A new addition must outrank a previously opened document. Restoring
         // the selected document after reload must not count as another open.
         await page.locator('#library-sort').selectOption('recent');
@@ -89,6 +89,8 @@ try {
         await expect.poll(order).toEqual(['new.txt', ...recent]);
         await page.locator('[data-document-id="appendix.md"] .document-card').click(); await showLibrary(page);
         await expect.poll(order).toEqual(['appendix.md', 'new.txt', 'chapter2.md', 'chapter10.md']);
+        await page.locator('#library-sort').selectOption('time');
+        await expect.poll(order).toEqual(['new.txt', ...readingTime]);
         for (const width of [320, 834]) {
           await page.setViewportSize({ width, height: 806 }); await showLibrary(page);
           await expect.poll(async () => {
