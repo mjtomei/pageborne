@@ -9,7 +9,9 @@ import { phoneReadingStorage } from '../src/reading-storage.js';
 import { readLocalFile } from '../src/library.js';
 import { showLibrary } from './ui-helpers.mjs';
 
-process.env.PAGEBORNE_AUTOMATIC_TERMINAL = 'false';
+const endpoint = 'https://library-fixture.invalid';
+// Explicit origins also disable private automatic pairing in the Vite config.
+process.env.PAGEBORNE_ASK_ORIGINS = endpoint;
 const out = 'test-results/library-recovery'; await mkdir(out, { recursive: true });
 const server = await createServer({ mode: 'debug', cacheDir: '.state/vite-library-recovery', clearScreen: false,
   plugins: [{ name: 'skip-inference', transform(code, id) {
@@ -22,7 +24,7 @@ const kv = { get: async key => values.get(key) || '', set: async (key, value) =>
 const library = new PhoneLibrary(kv); await library.read();
 for (let i = 0; i < 25; i++) await library.save(await readLocalFile(new File([`%PDF-1.4\nfixture-${i}\n%%EOF`], `paper-${String(i).padStart(2, '0')}.pdf`)));
 const target = library.snapshot.documents[18], kept = library.snapshot.documents[0];
-const prefs = { updatedAt: 1, ask: { mode: 'terminal', endpoint: server.resolvedUrls.local[0], token: 'fixture', agent: 'claude' }, positions: {}, bookmarks: {}, librarySort: 'name' };
+const prefs = { updatedAt: 1, ask: { mode: 'terminal', endpoint, token: 'fixture', agent: 'claude' }, positions: {}, bookmarks: {}, librarySort: 'name' };
 await new AtomicPhoneValue(kv, 'preferences').write(prefs);
 const history = { id: 'saved-reading', day: '2026-01-01', at: '2026-01-01T12:00:00.000Z', words: 100, seconds: 60,
   document: { id: target.id, key: target.positionKey, title: target.title }, scope: '', platform: 'glasses', sessions: [] };
@@ -36,12 +38,15 @@ const manifestReady = new Promise(resolve => releaseManifest = resolve);
 const context = await browser.newContext({ viewport: { width: 440, height: 806 }, isMobile: true, hasTouch: true });
 await context.route('**/api/**', async route => {
   const request = route.request(), url = new URL(request.url()); requests.push({ method: request.method(), path: url.pathname });
+  assert.equal(url.origin, endpoint, 'tests must not inherit private developer pairing');
+  const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' };
+  if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers, body: '' });
   if (url.pathname.endsWith('/pageborne/library')) {
     await manifestReady;
-    return route.fulfill({ json: { version: 1, id: 'fixture-library', directory: 'fixture', files: library.snapshot.documents.map((doc, i) =>
+    return route.fulfill({ headers, json: { version: 1, id: 'fixture-library', directory: 'fixture', files: library.snapshot.documents.map((doc, i) =>
       ({ name: doc.id, bytes: doc.bytes, sha256: doc.sha256, readingWords: (i + 1) * 1000 })) } });
   }
-  return route.fulfill({ json: { version: 1, days: [], documents: [], entries: [], messages: [], sessions: [], state: 'idle' } });
+  return route.fulfill({ headers, json: { version: 1, days: [], documents: [], entries: [], messages: [], sessions: [], state: 'idle' } });
 });
 await context.exposeFunction('__storage', ({ method, data }) => {
   if (method === 'getLocalStorage') return kv.get(data.key);
@@ -66,7 +71,7 @@ try {
   quota = usage(); rejectNonempty = true; releaseManifest();
   await expect(page.locator('.document-reading-time').filter({ hasText: '—' })).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('even-reader:diagnostics:v1')).errors.some(e => e.type === 'library-word-count-error'))).toBe(true);
-  assert(requests.every(r => !r.path.includes('/library/') && !(r.path.endsWith('/library') && r.method !== 'GET')), 'count refresh must never change desktop files');
+  assert(requests.every(r => !r.path.includes('/library/') && !(r.path.endsWith('/library') && !['GET', 'OPTIONS'].includes(r.method))), 'count refresh must never change desktop files');
   const row = page.locator(`[data-document-id="${target.id}"]`);
   await row.locator('.document-delete').tap();
   const confirm = row.locator('[data-confirm-delete]'); await confirm.scrollIntoViewIfNeeded();
