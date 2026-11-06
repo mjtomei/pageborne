@@ -30,6 +30,18 @@ export async function desktopLibrary(client, signal, name) {
     throw error;
   }
 }
+
+// Read-only manifest refresh: never infer a deletion or transfer originals.
+// Counts apply only to the exact bytes already saved on this device.
+export function preparedWordUpdates(snapshot, remote) {
+  const byName = new Map(remote.files.map(file => [file.name, file]));
+  return snapshot.documents.flatMap(doc => {
+    const file = byName.get(doc.id);
+    if (doc.format !== 'pdf' || !/^[a-f0-9]{64}$/.test(doc.sha256 || '') || doc.sha256 !== file?.sha256
+      || !validWordCount(file.readingWords) || doc.readingWords === file.readingWords) return [];
+    return [{ id: doc.id, expected: doc, readingWords: file.readingWords }];
+  });
+}
 export async function uploadLibraryFile(client, file, bytes, expected, signal, progress = () => {}) {
   const { offset: start } = await client.api('pageborne/library/status', { signal, body: { file } });
   if (!Number.isSafeInteger(start) || start < 0 || start > file.bytes) throw new Error('The desktop returned an invalid upload offset.');

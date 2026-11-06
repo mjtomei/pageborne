@@ -28,6 +28,7 @@ jobs:
         run: |
           export CHROME_PATH="$(node --input-type=module -e 'import { chromium } from "@playwright/test"; process.stdout.write(chromium.executablePath())')"
           npm run test:library-storage
+          npm run test:library-recovery
           npm run test:build-profiles
           node scripts/desktop-ocr-browser-test.mjs
           PAGE_TIME_BROWSER=chromium npm run test:page-time

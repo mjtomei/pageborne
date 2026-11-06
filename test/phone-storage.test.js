@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AtomicPhoneValue, PhoneLibrary, PhonePreferences, STORAGE_PREFIX, CHUNK_CHARS } from '../src/phone-storage.js';
+import { AtomicPhoneValue, PhoneLibrary, PhonePreferences, STORAGE_PREFIX, CHUNK_CHARS, bridgeStorage, retryAfterStorageRecovery } from '../src/phone-storage.js';
+import { BridgeLane } from '../src/diagnostics.js';
+import { PdfPreparationCache } from '../src/pdf-cache.js';
 import { localSnapshot, readLocalFile } from '../src/library.js';
 
 function memoryPhone() {
@@ -9,6 +11,102 @@ function memoryPhone() {
     async set(key, value) { if (this.failure?.(key, value)) throw new Error('Storage write failed'); values.set(key, value); } };
 }
 const document = (text = '# Kept\n\nSaved on the phone', name = 'kept.md') => readLocalFile(new File([text], name));
+
+test('a native storage rejection is logged as an error, with no payloads or false OK', async () => {
+  const events = [], lane = new BridgeLane({ log: (type, data) => events.push({ type, ...data }) });
+  const kv = bridgeStorage({ setLocalStorage: async () => false, getLocalStorage: async () => null }, lane);
+  await assert.rejects(kv.set(`${STORAGE_PREFIX}:doc:secret:0`, 'private text'), { code: 'phone-storage-write' });
+  await assert.rejects(kv.get(`${STORAGE_PREFIX}:doc:secret:0`), /storage is unavailable/);
+  assert.equal(events.filter(e => e.type === 'bridge-ok').length, 0);
+  assert.equal(events.filter(e => e.type === 'bridge-error').length, 2);
+  assert.equal(events[1].area, 'doc'); assert.equal(events[1].characters, 12);
+  assert.doesNotMatch(JSON.stringify(events), /secret|private text/);
+});
+
+test('deletion retries a rejected index save at full quota after freeing only derived caches', async () => {
+  const kv = memoryPhone(), store = new PhoneLibrary(kv); await store.read();
+  await store.save(await document('# Keep this original', 'keep.md'));
+  await store.save(await document('Remove this original '.repeat(2000), 'delete.md'));
+  const cache = new PdfPreparationCache(kv);
+  await cache.forDocument('keep.md').write('fixture', { text: 'Derived '.repeat(20000) });
+  const usage = () => [...kv.values.values()].reduce((sum, value) => sum + value.length, 0), limit = usage();
+  const set = kv.set.bind(kv);
+  kv.set = async (key, value) => {
+    if (usage() - (kv.values.get(key)?.length || 0) + value.length > limit) throw Object.assign(Error('Rejected'), { code: 'phone-storage-write' });
+    await set(key, value);
+  };
+  const doc = store.snapshot.documents[0];
+  await assert.rejects(store.updateMetadata([{ id: doc.id, expected: doc, readingWords: 12345 }]), { code: 'phone-storage-write' });
+  assert.equal(store.uncertain, false, 'an explicit refusal must not lock future deletion');
+  let recovered = 0;
+  const result = await retryAfterStorageRecovery(async () => {
+    // Deletion preserves conversation references before removing the original.
+    await new AtomicPhoneValue(kv, 'reading-recovery-fixture').write({ text: 'History '.repeat(2000) });
+    return store.remove('delete.md');
+  }, async () => { recovered++; return cache.clear(); });
+  assert.equal(recovered, 1); assert.deepEqual(result.snapshot.documents.map(d => d.id), ['keep.md']);
+  const reopened = await new PhoneLibrary(kv).read();
+  assert.equal(reopened.documents[0].content, '# Keep this original');
+  assert(usage() < limit);
+});
+
+test('full library storage can delete without any PDF/model caches by reclaiming the unused index', async () => {
+  const kv = memoryPhone(), store = new PhoneLibrary(kv); await store.read();
+  for (let i = 0; i < 8; i++) await store.save(await document('Original '.repeat(1000), `file-${i}.md`));
+  const usage = () => [...kv.values.values()].reduce((sum, value) => sum + value.length, 0), limit = usage(), set = kv.set.bind(kv);
+  kv.set = async (key, value) => {
+    if (usage() - (kv.values.get(key)?.length || 0) + value.length > limit) throw Object.assign(Error('Full'), { code: 'phone-storage-write' });
+    return set(key, value);
+  };
+  await store.remove('file-4.md');
+  const restored = await new PhoneLibrary(kv).read();
+  assert.equal(restored.documents.length, 7);
+  assert(restored.documents.every(doc => doc.id !== 'file-4.md' && doc.content === 'Original '.repeat(1000)));
+  assert(usage() < limit);
+});
+
+test('interrupted deletion resumes its saved intent without damaging unselected originals', async () => {
+  for (const location of ['inactive', 'journal', 'body', 'index', 'pointer', 'cleanup']) {
+    const kv = memoryPhone(), store = new PhoneLibrary(kv); await store.read();
+    await store.save(await document('# Kept', 'kept.md')); await store.save(await document('# Selected', 'selected.md'));
+    kv.failure = (key, value) => location === 'inactive' ? /:library:[ab]:\d+$/.test(key) && !value
+      : location === 'journal' ? key.endsWith(':pending') && value : location === 'body' ? key.includes(':doc:') && !value
+      : location === 'index' ? /:library:[ab]:\d+$/.test(key) && value
+      : location === 'cleanup' ? key.endsWith(':pending') && !value : key === `${STORAGE_PREFIX}:library`;
+    if (location === 'cleanup') await store.remove('selected.md');
+    else await assert.rejects(store.remove('selected.md'), /Storage write failed/);
+    kv.failure = null;
+    const reopened = new PhoneLibrary(kv), saved = await reopened.read();
+    assert.deepEqual(saved.documents.map(doc => doc.content), ['inactive', 'journal'].includes(location) ? ['# Kept', '# Selected'] : ['# Kept']);
+    await reopened.remove('selected.md');
+    assert.equal((await new PhoneLibrary(kv).read()).documents[0].content, '# Kept');
+  }
+});
+
+test('storage recovery never retries uncertain writes and only retries a rejection once', async () => {
+  let calls = 0, recoveries = 0;
+  await assert.rejects(retryAfterStorageRecovery(async () => { calls++; throw Object.assign(Error('pending'), { code: 'bridge-timeout' }); }, async () => { recoveries++; return 1; }), /pending/);
+  assert.equal(calls, 1); assert.equal(recoveries, 0);
+  await assert.rejects(retryAfterStorageRecovery(async () => { calls++; throw Object.assign(Error('refused'), { code: 'phone-storage-write' }); }, async () => { recoveries++; return 1; }), /refused/);
+  assert.equal(calls, 3); assert.equal(recoveries, 1);
+});
+
+test('a deletion whose pointer commits before a lost acknowledgement cannot delete the next document on restart', async () => {
+  const kv = memoryPhone(), store = new PhoneLibrary(kv); await store.read();
+  await store.save(await document('# Selected', 'selected.md')); await store.save(await document('# Keep', 'keep.md'));
+  const set = kv.set.bind(kv); let pending = true;
+  kv.set = async (key, value) => {
+    await set(key, value);
+    if (pending && key === `${STORAGE_PREFIX}:library`) {
+      pending = false; throw Object.assign(Error('Still pending'), { code: 'bridge-timeout' });
+    }
+  };
+  await assert.rejects(store.remove('selected.md'), { code: 'bridge-timeout', deletionPending: true });
+  await assert.rejects(store.remove('keep.md'), /could not be confirmed/);
+  const restored = await new PhoneLibrary(kv).read();
+  assert.deepEqual(restored.documents.map(doc => [doc.id, doc.content]), [['keep.md', '# Keep']]);
+  assert.equal(kv.values.get(`${STORAGE_PREFIX}:pending`), '');
+});
 
 test('phone documents survive a fresh library with no browser state, and deletions stay deleted', async () => {
   const kv = memoryPhone(); const first = new PhoneLibrary(kv); await first.read();

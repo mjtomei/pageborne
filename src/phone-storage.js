@@ -56,19 +56,39 @@ export class AtomicPhoneValue {
     await this.kv.set(this.key, JSON.stringify(next));
     this.head = next;
   }
+  async releaseInactive() {
+    if (!this.head) return 0;
+    const prefix = `${this.key}:${this.head.prefix === `${this.key}:a` ? 'b' : 'a'}`;
+    let cleared = 0;
+    // Only the pointed-to slot is committed. Discard the unused copy before
+    // a shrinking transaction needs space for its journal/replacement index.
+    for (let i = 0; i < this.head.count; i++) {
+      const key = `${prefix}:${i}`, value = await this.kv.get(key);
+      if (value) { await this.kv.set(key, ''); cleared += value.length; }
+    }
+    return cleared;
+  }
 }
 
 export function bridgeStorage(bridge, lane) {
+  // Keep payloads, document names and model keys out of diagnostics.
+  const context = (key, value) => ({ area: key.startsWith('pageborne:models:v1:') ? 'models'
+    : key.startsWith(`${STORAGE_PREFIX}:pdf-cache:`) ? 'pdf-cache'
+    : key.slice(STORAGE_PREFIX.length + 1).split(':')[0], ...(value === undefined ? {} : { characters: value.length }) });
   return {
     async get(key) {
-      const value = await lane.run('storage-read', () => bridge.getLocalStorage(key), { quiet: key.startsWith('pageborne:models:v1:') });
-      if (typeof value !== 'string') throw new Error('Phone storage is unavailable. Close and reopen the reader.');
-      return value;
+      return lane.run('storage-read', async () => {
+        const value = await bridge.getLocalStorage(key);
+        if (typeof value !== 'string') throw new Error('Even app storage is unavailable. Close and reopen the reader.');
+        return value;
+      }, { quiet: key.startsWith('pageborne:models:v1:'), context: context(key) });
     },
     async set(key, value) {
-      if (await lane.run('storage-write', () => bridge.setLocalStorage(key, value), { quiet: key.startsWith('pageborne:models:v1:') }) !== true) {
-        throw Object.assign(new Error('Could not save to phone storage. Free some space and try again.'), { code: 'phone-storage-write' });
-      }
+      return lane.run('storage-write', async () => {
+        if (await bridge.setLocalStorage(key, value) !== true) throw Object.assign(
+          new Error('Even app storage rejected the save. Its storage may be full or unavailable.'),
+          { code: 'phone-storage-write', storage: context(key, value) });
+      }, { quiet: key.startsWith('pageborne:models:v1:'), context: context(key, value) });
     },
   };
 }
@@ -80,8 +100,9 @@ export class PhoneLibrary {
     this.snapshot = localSnapshot(null); this.tail = Promise.resolve(); this.uncertain = false;
   }
   serialize(work) {
-    const result = this.tail.catch(() => {}).then(() => {
+    const result = this.tail.catch(() => {}).then(async () => {
       if (this.uncertain) throw new Error('The last phone save could not be confirmed. Close and reopen the reader before changing files.');
+      await this.recover();
       return work();
     });
     // The queue must not retain the last loaded/saved document body.
@@ -90,7 +111,32 @@ export class PhoneLibrary {
   async recover() {
     const raw = await this.kv.get(JOURNAL);
     if (!raw) return;
-    const ref = JSON.parse(raw); validateDescriptor(ref);
+    const pending = JSON.parse(raw);
+    if (Array.isArray(pending)) {
+      // A tiny durable deletion intent fits after discarding the unused index
+      // slot. It allows freeing the selected body BEFORE writing a new index.
+      // The old index remains the recovery record until the pointer commits.
+      const [kind, length, index] = pending;
+      if (pending.length !== 3 || kind !== 'delete' || !Number.isSafeInteger(length) || length <= 0
+        || !Number.isSafeInteger(index) || index < 0 || !this.index.head || this.index.head.length > length) {
+        throw new Error('Invalid pending deletion. No files were changed.');
+      }
+      if (this.index.head.length === length) {
+        const meta = this.catalog.documents[index];
+        if (!meta) throw new Error('Invalid pending deletion. No files were changed.');
+        validateDescriptor(meta.body);
+        if (!meta.body.prefix.startsWith(`${STORAGE_PREFIX}:doc:`)) throw new Error('Invalid pending deletion. No files were changed.');
+        for (let i = 0; i < meta.body.count; i++) await this.kv.set(`${meta.body.prefix}:${i}`, '');
+        await this.commit({ ...this.catalog, documents: this.catalog.documents.filter((_, i) => i !== index) });
+        this.snapshot = { ...this.snapshot, documents: this.snapshot.documents.filter(doc => doc.id !== meta.id) };
+      }
+      // Removing a metadata record strictly shrinks the index. A shorter
+      // committed head means deletion already finished; never delete by the
+      // old array position in the replacement catalog.
+      await this.kv.set(JOURNAL, '');
+      return;
+    }
+    const ref = pending; validateDescriptor(ref);
     if (!this.catalog.documents.some(doc => doc.body.prefix === ref.prefix)) {
       for (let i = 0; i < ref.count; i++) await this.kv.set(`${ref.prefix}:${i}`, '');
     }
@@ -100,7 +146,7 @@ export class PhoneLibrary {
     try { await this.index.write(catalog); }
     // A timed-out host call could still commit later. Do not start another
     // mutation against an uncertain index; reopening reads the actual pointer.
-    catch (error) { this.uncertain = true; throw error; }
+    catch (error) { this.uncertain = !storageWriteRejected(error); throw error; }
     this.catalog = catalog;
   }
   async read(legacy = null, onProgress = () => {}) {
@@ -109,6 +155,7 @@ export class PhoneLibrary {
       if (saved.version !== 1 || !Array.isArray(saved.documents) || saved.documents.length > MAX_DOCUMENTS) throw new Error('Saved phone library is invalid. No files were changed.');
       this.catalog = saved;
     }
+    await this.recover();
     const documents = [];
     for (const meta of this.catalog.documents) {
       onProgress(`Opening saved documents (${documents.length + 1}/${this.catalog.documents.length})…`);
@@ -117,7 +164,6 @@ export class PhoneLibrary {
       documents.push({ ...doc, revision: body.prefix, ...(this.lazy ? {} : { content: await readChunks(this.kv, body) }) });
     }
     this.snapshot = localSnapshot({ documents });
-    await this.recover();
     if (!this.catalog.migrated) {
       const old = localSnapshot(typeof legacy === 'function' ? await legacy() : legacy);
       for (const doc of old.documents) {
@@ -161,7 +207,6 @@ export class PhoneLibrary {
   updateMetadata(updates) { return this.updateDates(updates); }
   save(document, onProgress = () => {}, migrating = false, expected = undefined) {
     return this.serialize(async () => {
-      await this.recover();
       const old = expected !== undefined ? this.catalog.documents.find(doc => doc.id === document.id) : null;
       const result = expected !== undefined ? replaceDocument(this.snapshot, document, expected) : addDocument(this.snapshot, document);
       if (migrating) {
@@ -198,16 +243,32 @@ export class PhoneLibrary {
   }
   remove(id, expected = undefined) {
     return this.serialize(async () => {
-      await this.recover();
       if (expected !== undefined) assertDocumentUnchanged(this.snapshot.documents.find(doc => doc.id === id), expected);
       const meta = this.catalog.documents.find(doc => doc.id === id);
       if (!meta) return { snapshot: this.snapshot };
-      await this.kv.set(JOURNAL, JSON.stringify(meta.body));
-      await this.commit({ ...this.catalog, documents: this.catalog.documents.filter(doc => doc.id !== id) });
-      this.snapshot = { ...this.snapshot, documents: this.snapshot.documents.filter(doc => doc.id !== id) };
-      await this.recover().catch(() => {});
+      await this.index.releaseInactive();
+      await this.kv.set(JOURNAL, JSON.stringify(['delete', this.index.head.length, this.catalog.documents.indexOf(meta)]));
+      try { await this.recover(); }
+      catch (error) { if (this.catalog.documents.some(doc => doc.id === id)) throw Object.assign(error, { deletionPending: true }); }
       return { snapshot: this.snapshot };
     });
+  }
+}
+
+// A confirmed rejection can be retried after reclaiming disposable data. A
+// timeout cannot: the uncancellable native write might still commit later.
+export const storageWriteRejected = error => error?.code === 'phone-storage-write' || error?.name === 'QuotaExceededError';
+export async function retryAfterStorageRecovery(work, recover) {
+  try { return await work(); }
+  catch (error) {
+    if (!storageWriteRejected(error)) throw error;
+    try {
+      if (!(await recover())) throw error;
+      return await work();
+    } catch (retryError) {
+      if (error.deletionPending) retryError.deletionPending = true;
+      throw retryError;
+    }
   }
 }
 

@@ -1,4 +1,4 @@
-import { waitForEvenAppBridge, ImageRawDataUpdateResult } from '@evenrealities/even_hub_sdk';
+import { waitForEvenAppBridge, ImageRawDataUpdateResult, validateEvenHubPageContainer } from '@evenrealities/even_hub_sdk';
 import { WIDTH, HEIGHT, BODY_TOP, BODY_HEIGHT, MARGIN, rowAt } from './document.js';
 import { textWindow, titleText, LINE_HEIGHT, byteLength } from './native-text.js';
 import { documentPickerText } from './document-picker.js';
@@ -381,8 +381,12 @@ export class GlassesDisplay {
       if (this.created) {
         if (!await this.bridge.rebuildPageContainer(pageDefinition(mode, content))) throw new Error('Could not rebuild the text page.');
       } else {
-        const result = await this.bridge.createStartUpPageContainer(pageDefinition(mode, content));
-        if (result !== 0) throw new Error(`Could not create the text page (${result}). Close and reopen the reader.`);
+        const page = pageDefinition(mode, content), validation = validateEvenHubPageContainer(page);
+        const result = await this.bridge.createStartUpPageContainer(page);
+        if (result !== 0) throw Object.assign(new Error(`Could not create the text page (${result}). Close and reopen the reader.`), {
+          context: { result, resultName: ['success', 'invalid', 'oversize', 'outOfMemory'][result] || 'unknown',
+            validation: validation.valid ? 'valid' : validation.code, containers: page.containerTotalNum },
+        });
         this.created = true;
       }
     });

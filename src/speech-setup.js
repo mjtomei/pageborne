@@ -94,7 +94,7 @@ export class SpeechSetup {
       this.models.close();
       this.blocked = false; cancelTimeout(this.timer); this.dialog.close(); this.resolve(); this.pending = null;
     } catch (error) {
-      this.storageFailure = error.code === 'phone-storage-write' || error.name === 'QuotaExceededError' || /phone storage|quota/i.test(error.message);
+      this.storageFailure = error.code === 'phone-storage-write' || error.name === 'QuotaExceededError' || /(?:phone|app) storage|quota/i.test(error.message);
       this.error = error.message || 'Voice setup could not finish. Retry when connected.';
       if (!this.dialog.open) this.dialog.showModal();
     } finally { this.busy = false; this.render(); }

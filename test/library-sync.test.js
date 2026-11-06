@@ -9,7 +9,20 @@ import { paperFilesStatus, paperFileChunk, commitPaperFiles } from '../integrati
 import { workspaceCapabilities } from '../integrations/even-terminal/pageborne-workspaces.js';
 import { PhoneLibrary } from '../src/phone-storage.js';
 import { readLocalFile, MAX_LIBRARY_BYTES, MAX_PDF_BYTES } from '../src/library.js';
-import { syncLibrary, documentDescriptor, documentBytes, uploadLibraryFile, planLibrarySync } from '../src/library-sync.js';
+import { syncLibrary, documentDescriptor, documentBytes, uploadLibraryFile, planLibrarySync, preparedWordUpdates } from '../src/library-sync.js';
+
+test('read-only word counts match exact saved bytes and ignore replacements, unknown hashes and deleted files', () => {
+  const sha = 'a'.repeat(64), documents = [
+    { id: 'match.pdf', format: 'pdf', sha256: sha }, { id: 'empty.pdf', format: 'pdf', sha256: sha },
+    { id: 'changed.pdf', format: 'pdf', sha256: 'b'.repeat(64) }, { id: 'unhashed.pdf', format: 'pdf' },
+    { id: 'partial.pdf', format: 'pdf', sha256: sha }, { id: 'text.md', sha256: sha },
+  ];
+  const files = [...documents, { id: 'deleted.pdf' }].map(doc => ({ name: doc.id, sha256: sha, readingWords: doc.id === 'empty.pdf' ? 0 : 1200 }));
+  delete files.find(f => f.name === 'partial.pdf').readingWords;
+  const updates = preparedWordUpdates({ documents }, { files });
+  assert.deepEqual(updates.map(u => [u.id, u.readingWords]), [['match.pdf', 1200], ['empty.pdf', 0]]);
+  assert.equal(updates[0].expected, documents[0]);
+});
 import { paperAttachments, syncPaperFiles } from '../src/ask-documents.js';
 import { nativeLayout } from '../src/native-text.js';
 import { parseDocument } from '../src/document.js';

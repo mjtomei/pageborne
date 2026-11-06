@@ -24,11 +24,11 @@ import { speedTitleBitmap } from './speed-title.js';
 import { pdfSettingsFor, normalizePdfSettings, usePdfDefaults, forgetPdfSettings } from './pdf-settings.js';
 import { GlassesDisplay, paintFrame } from './glasses.js';
 import { LocalLibrary } from './library.js';
-import { syncLibrary } from './library-sync.js';
+import { syncLibrary, desktopLibrary, preparedWordUpdates } from './library-sync.js';
 import { EvenTerminal } from './ask-terminal.js';
 import { connectionMode } from './ask-connections.js';
 import { waitForEvenAppBridge } from '@evenrealities/even_hub_sdk';
-import { PhoneLibrary, PhonePreferences, AtomicPhoneValue, bridgeStorage } from './phone-storage.js';
+import { PhoneLibrary, PhonePreferences, AtomicPhoneValue, bridgeStorage, retryAfterStorageRecovery } from './phone-storage.js';
 import { waitForSpeechHost } from './speech-storage.js';
 import { PdfPreparationCache, browserPdfStorage } from './pdf-cache.js';
 import { readFileInBackground } from './file-reader.js';
@@ -81,6 +81,9 @@ function applyTheme() {
 }
 applyTheme();
 let snapshot = null; let active = null; let layout = null;
+const fetchedReadingWords = new Map();
+let readingCountsRefresh = null, readingCountsAttempt = 0;
+let deleteStatus = '', deleting = false, deletionPending = false;
 let libraryBusy = false; let libraryReady = false; let deleteId = null; let picker = null; let positionPicker = null; let modePicker = null;
 let librarySync = null; let librarySyncLabel = ''; let librarySyncHold = false;
 let positionPickerHold = false;
@@ -491,14 +494,25 @@ function searchSnippet(text, query, radius = 40) {
   return [document.createTextNode(`${start > 0 ? '…' : ''}${clean.slice(start, at)}`), match,
     document.createTextNode(end < clean.length ? `${clean.slice(at + query.trim().length, end).replace(/[\s.,;:…]+$/, '')}…` : clean.slice(at + query.trim().length, end))];
 }
-function renderLibrary() {
-  renderLibraryEstimates();
+function renderLibraryAvailability() {
   $('library-sort').value = librarySort(preferences.librarySort);
   $('library-sort').disabled = !libraryReady;
   $('library-librarian').disabled = !libraryReady || !!askUI?.unavailableReason;
   $('library-sync').disabled = libraryBusy || !libraryReady;
   renderSyncSummary();
   $('import').disabled = libraryBusy || !libraryReady;
+}
+function renderDeleteStatus() {
+  for (const button of $('documents').querySelectorAll('.document-delete, .delete-actions button')) button.disabled = libraryBusy;
+  const status = $('documents').querySelector('.delete-status');
+  if (status) { status.textContent = deleteStatus; status.hidden = !deleteStatus; }
+  const confirm = $('documents').querySelector('[data-confirm-delete]');
+  if (confirm) confirm.textContent = deleting ? 'Deleting…' : 'Delete';
+  const cancel = $('documents').querySelector('.delete-actions .secondary');
+  if (cancel) cancel.textContent = deletionPending ? 'Close' : 'Cancel';
+}
+function renderLibrary() {
+  renderLibraryEstimates(); renderLibraryAvailability();
   $('documents').replaceChildren();
   $('doc-count').textContent = String(snapshot?.documents.length || 0);
   if (!snapshot?.documents.length) return empty($('documents'), 'No documents yet.');
@@ -545,20 +559,22 @@ function renderLibrary() {
       yes.dataset.confirmDelete = doc.id; yes.disabled = libraryBusy;
       yes.onclick = () => deleteDocument(doc.id);
       const actions = document.createElement('div'); actions.className = 'delete-actions'; actions.append(cancel, yes);
-      confirm.append(label, actions); entry.append(confirm);
+      const status = document.createElement('p'); status.className = 'delete-status'; status.setAttribute('role', 'status');
+      confirm.append(label, actions, status); entry.append(confirm);
     } else {
       const remove = document.createElement('button'); remove.className = 'document-delete';
       remove.innerHTML = '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3.5 5h11M7 5V3.5h4V5M5 5l.7 9.5h6.6L13 5"/></svg>';
       remove.setAttribute('aria-label', `Delete ${doc.id}`); remove.disabled = libraryBusy;
-      remove.onclick = () => { reader.pause(); deleteId = doc.id; renderLibrary(); $('documents').querySelector('[data-confirm-delete]')?.focus(); };
+      remove.onclick = () => { reader.pause(); deleteId = doc.id; deleteStatus = ''; deletionPending = false; renderLibrary(); $('documents').querySelector('[data-confirm-delete]')?.focus({ preventScroll: true }); };
       entry.append(remove);
     }
     $('documents').append(entry);
   }
-  renderLibraryEstimates();
+  renderLibraryEstimates(); renderDeleteStatus();
 }
 function renderLibraryEstimates() {
-  const average = averageReadingSpeed(readingLog?.entries), documents = snapshot?.documents || [];
+  const average = averageReadingSpeed(readingLog?.entries), documents = (snapshot?.documents || []).map(doc =>
+    documentReadingWords(doc) == null && fetchedReadingWords.has(doc.sha256) ? { ...doc, readingWords: fetchedReadingWords.get(doc.sha256) } : doc);
   const byId = new Map(documents.map(doc => [doc.id, doc]));
   for (const entry of $('documents').children) {
     const doc = byId.get(entry.dataset.documentId), estimate = entry.querySelector('.document-reading-time');
@@ -572,7 +588,32 @@ function renderLibraryEstimates() {
   $('library-reading-time').textContent = `${total.duration}${total.unknown && total.duration !== '—' ? '+' : ''}`;
   $('library-reading-speed').textContent = readingSpeedLabel(average);
   $('library-reading-pending').hidden = !total.unknown;
-  $('library-reading-pending').textContent = `${total.unknown} ${total.unknown === 1 ? 'document awaits' : 'documents await'} a word count. Sync after PDF preparation to include ${total.unknown === 1 ? 'it' : 'them'}.`;
+  $('library-reading-pending').textContent = readingCountsRefresh ? 'Checking desktop word counts…'
+    : `${total.unknown} ${total.unknown === 1 ? 'document awaits' : 'documents await'} a word count. Connect to the desktop or open the document to update its reading time.`;
+  diagnostics.library = { documents: documents.length, missingWordCounts: total.unknown, refreshingWordCounts: !!readingCountsRefresh };
+}
+async function refreshReadingCounts() {
+  if (!libraryReady || libraryBusy || readingCountsRefresh || Date.now() - readingCountsAttempt < 60000
+    || !snapshot.documents.some(doc => doc.format === 'pdf' && documentReadingWords(doc) == null && !fetchedReadingWords.has(doc.sha256))) return;
+  const config = askUI.readConfig();
+  if (connectionMode(config) !== 'terminal' || !config.endpoint) return;
+  const target = store; readingCountsAttempt = Date.now();
+  readingCountsRefresh = (async () => {
+    const remote = await desktopLibrary(new EvenTerminal(config, askUI.options()));
+    if (store !== target || libraryBusy) return;
+    const updates = preparedWordUpdates(snapshot, remote);
+    // Still show verified counts if the native store refuses persistence.
+    // The digest prevents counts surviving a replacement with different bytes.
+    for (const update of updates) fetchedReadingWords.set(update.expected.sha256, update.readingWords);
+    renderLibraryEstimates();
+    if (updates.length) {
+      const result = await target.updateMetadata(updates); snapshot = result.snapshot;
+      diagnostics.log('library-word-counts', { updated: updates.length });
+    }
+  })().catch(error => diagnostics.error('library-word-count-error', error, { code: error.code, storage: error.storage }))
+    .finally(() => { readingCountsRefresh = null; renderLibraryEstimates(); });
+  renderLibraryEstimates();
+  return readingCountsRefresh;
 }
 function readingLogChanged() { readingHistory.render(); renderLibraryEstimates(); }
 async function cacheReadingWords(doc, words) {
@@ -591,6 +632,7 @@ function openFromPhone(id) {
 const drawerQuery = matchMedia('(max-width: 999px)');
 let settingsTrigger = null;
 function setLibraryOpen(open, focus = true) {
+  if (open) void refreshReadingCounts();
   if (open) { previewInput?.cancel(); fullscreenReader?.exit(); }
   const drawer = drawerQuery.matches;
   const shown = drawer ? open : true;
@@ -1171,7 +1213,7 @@ const readerContent = document.querySelector('.reader-content');
 new ResizeObserver(() => readerContent.style.setProperty('--reader-height', `${readerContent.clientHeight}px`)).observe(readerContent);
 $('tool-close').onclick = () => { const tab = activeTab; showTab(null); if (tab) $(`tab-${tab}`).focus(); };
 function setLibraryBusy(value) {
-  libraryBusy = value; renderLibrary(); renderImports(imports.jobs);
+  libraryBusy = value; renderLibraryAvailability(); renderDeleteStatus(); renderImports(imports.jobs);
 }
 function syncProgress(text, label = text) {
   $('library-sync-status').hidden = !text; $('library-sync-status').textContent = text;
@@ -1251,7 +1293,7 @@ $('library-sync').onclick = $('library-sync-summary').onclick = () => {
 setInterval(renderSyncSummary, 30000);
 $('library-sync-cancel').onclick = () => librarySync?.abort();
 function storageMessage(error) {
-  return error.name === 'QuotaExceededError' ? 'Phone storage is full. Delete some files and try again.' : error.message;
+  return error.name === 'QuotaExceededError' ? 'App storage could not save this change. Free cached space and try again.' : error.message;
 }
 const imports = new ImportQueue({
   prepare: readFileInBackground,
@@ -1323,11 +1365,19 @@ async function deleteDocument(id) {
   if (libraryBusy || !libraryReady) return;
   const doc = snapshot.documents.find(doc => doc.id === id);
   if (!doc) return;
-  reader.pause(); setLibraryBusy(true);
+  reader.pause(); deleting = true; deleteStatus = 'Deleting…'; setLibraryBusy(true);
+  let stage = 'reading-history';
+  diagnostics.log('library-delete-start', { format: doc.format || 'text', bytes: doc.bytes });
   try {
     if (active?.id === id) readingTracker.leave();
-    await preserveReadingSessions(doc);
-    const result = await store.remove(id);
+    const result = await retryAfterStorageRecovery(async () => {
+      stage = 'reading-history'; await preserveReadingSessions(doc);
+      stage = 'library-index'; return store.remove(id);
+    }, async () => {
+      diagnostics.log('library-delete-recovery', { stage });
+      stage = 'free-cache'; deleteStatus = 'Freeing cached space before deleting…'; renderDeleteStatus();
+      return (await pdfPreparationCache.clear()) + (await askUI.speech.recoverDownloads());
+    });
     await pdfPreparationCache.remove(id).catch(error => diagnostics.error('pdf-cache-delete-error', error));
     rememberPosition(); snapshot = result.snapshot; deleteId = null;
     if (preferences.recent) preferences.recent = preferences.recent.filter(item => item !== id);
@@ -1342,9 +1392,15 @@ async function deleteDocument(id) {
     } else { refreshDocumentPicker(); savePreferences(); renderLibrary(); }
     if (!active) setLibraryOpen(true, false);
     dirty = true;
+    diagnostics.log('library-delete-ok', { documents: snapshot.documents.length });
     notice(`Deleted ${doc.id} from this reader.${Object.values(preferences.librarySync || {}).some(state => state.files?.[doc.id]) ? ' Next sync also removes the desktop copy, keeping its history.' : ' The original file is unchanged.'}`);
-  } catch (error) { notice(`Could not delete ${doc.id}: ${storageMessage(error)}`, true); }
-  finally { setLibraryBusy(false); }
+  } catch (error) {
+    deletionPending = !!error.deletionPending;
+    diagnostics.error('library-delete-error', error, { stage, code: error.code, storage: error.storage, deletionPending });
+    deleteStatus = deletionPending ? `Deletion is saved but unfinished. Retry or reopen Pageborne to finish. ${storageMessage(error)}`
+      : `Could not delete: ${storageMessage(error)}`; renderDeleteStatus();
+  }
+  finally { deleting = false; setLibraryBusy(false); }
 }
 $('import').onclick = () => $('file-picker').click();
 $('file-picker').onchange = () => {
@@ -1859,6 +1915,7 @@ async function openLibrary() {
     const selected = snapshot.documents.some(doc => doc.id === preferences.selected?.id) ? preferences.selected.id : null;
     selectDocument(selected, false);
     setLibraryOpen(!active, false);
+    void refreshReadingCounts();
     await phonePreferences?.flush();
     if (WEB) void startLibrarySync();
   })().catch(error => { notice(`Could not open the saved library: ${error.message}`, true); renderLibrary(); renderControls(); setLibraryOpen(true, false); })
