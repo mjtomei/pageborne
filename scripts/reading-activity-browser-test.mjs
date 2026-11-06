@@ -146,6 +146,26 @@ try {
       await expect(page.locator('.reading-average')).toHaveText(`${speed} · documents only`);
       await expect(page.locator('.reading-combined-average')).toContainText('Including Ask:');
       await expect(page.locator('.reading-times')).toContainText('reading Ask');
+      const helpButton = page.getByRole('button', { name: 'Help: Reading history', exact: true });
+      const help = page.locator('#reading-history .help-popup');
+      await expect(help).not.toBeVisible();
+      await helpButton.click();
+      await expect(help).toBeVisible();
+      await expect(help).toContainText('Single-pane sessions do not count');
+      await expect(help).toContainText('Export the viewing log to see all of them');
+      await page.keyboard.press('Escape');
+      await expect(help).not.toBeVisible();
+      await expect(helpButton).toBeFocused();
+      await expect(page.locator('#reading-history')).toBeVisible();
+      for (const width of [320, 440]) {
+        await page.setViewportSize({ width, height: 806 });
+        const boxes = await page.locator('.reading-chart-controls').evaluate(row => {
+          const date = row.querySelector('input').getBoundingClientRect(), help = row.querySelector('button').getBoundingClientRect(), bounds = row.getBoundingClientRect();
+          return { sameRow: Math.abs((date.top + date.bottom) / 2 - (help.top + help.bottom) / 2) < 2,
+            rightAligned: Math.abs(help.right - bounds.right) < 2, fits: date.right <= help.left && bounds.right <= innerWidth };
+        });
+        assert.ok(boxes.sameRow && boxes.rightAligned && boxes.fits, 'help is at the right of the date row without overflow');
+      }
       await page.locator('.reading-view-log summary').first().click();
       await expect(page.locator('.reading-view-log[open]')).toContainText('Start');
       await expect(page.locator('.reading-view-log[open] time').first()).toHaveAttribute('datetime', /T/);
@@ -182,18 +202,18 @@ try {
       }, { day: groupedDay, mode });
       await page.locator('#reading-history input[type=date]').fill(groupedDay);
       await page.locator('#reading-history input[type=date]').dispatchEvent('change');
-      await expect(page.locator('.reading-entries > li')).toHaveCount(3);
+      await expect(page.locator('.reading-entries > li')).toHaveCount(1);
       await expect(page.locator('.reading-total')).toHaveText('55 words');
-      await expect(page.locator('.reading-explanation').first()).toContainText('Single-pane sessions do not count');
-      await expect(page.locator('.reading-entries > li').nth(1)).toContainText('0 words');
-      await expect(page.locator('.reading-entries > li').nth(2)).toContainText('0 words');
+      await expect(page.locator('.reading-explanation').first()).not.toBeVisible();
+      assert.equal(await page.evaluate(day => window.__reading.entries.filter(e => e.day === day).length, groupedDay), 57,
+        'excluded entries remain in the raw viewing log');
       const grouped = page.locator('.reading-entries > li').first();
       await expect(grouped).toContainText('55 words · pages 1–55');
       await expect(grouped.getByRole('button', { name: 'Claude conversation', exact: true })).toHaveCount(1);
       await grouped.getByRole('button', { name: 'Codex conversation', exact: true }).click();
       await expect(page.locator('.reading-conversation')).toContainText('still available after deleting');
       await page.getByRole('button', { name: '← Reading history', exact: true }).click();
-      await expect(page.locator('.reading-entries > li')).toHaveCount(3);
+      await expect(page.locator('.reading-entries > li')).toHaveCount(1);
       await page.screenshot({ path: `test-results/reading-activity/${mode}-grouped.png` });
       if (mode === 'web') {
         await page.setViewportSize({ width: 834, height: 1194 });

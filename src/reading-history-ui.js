@@ -2,6 +2,7 @@ import { readingDay } from './reading-activity.js';
 import { averageReadingSpeed, readingSpeedLabel } from './reading-estimates.js';
 import { acceptedReadingEntries, readingTotals } from './reading-metrics.js';
 import { groupReadingEntries, readingGroupLocation } from './reading-history-groups.js';
+import { helpPopup } from './help-popups.js';
 import { safeMarkdown } from './safe-markdown.js';
 import { marked } from 'marked';
 import './reading-history.css';
@@ -17,7 +18,15 @@ export class ReadingHistoryUI {
     const heading = node('div', null, 'reading-history-heading'), title = node('h2', 'Reading history'); title.id = 'reading-history-title';
     const close = node('button', 'Close'); close.type = 'button'; close.onclick = () => this.dialog.close(); heading.append(title, close);
     this.body = node('div', null, 'reading-history-body'); this.dialog.append(heading, this.body); document.body.append(this.dialog);
-    this.dialog.addEventListener('close', () => { this.request?.abort(); this.chat = false; });
+    this.helpButton = node('button', '?', 'help-button'); this.helpButton.type = 'button';
+    this.helpButton.setAttribute('aria-label', 'Help: Reading history');
+    const explanations = [
+      node('p', 'Estimated from text shown and then moved past at 10–900 words/minute. A session must include at least two distinct text panes read at that pace. Single-pane sessions do not count toward words, reading time or either average. Pauses over five minutes start a new session. Fast paging, image-only views and views idle for over five minutes do not count. The graph counts documents only; Ask includes visible questions and answers, excluding typing, recording and activity/status text. Rereading counts again. Days use the device’s local date.', 'reading-explanation muted'),
+      node('p', 'The list shows counted views. Every new pane view is kept with start/end times, including excluded views. Export the viewing log to see all of them. Older history contains only readings accepted at the time.', 'reading-explanation muted'),
+    ];
+    this.dialog.append(...explanations);
+    this.help = helpPopup(explanations, { button: this.helpButton, title: 'Reading history' });
+    this.dialog.addEventListener('close', () => { this.help.close(); this.request?.abort(); this.chat = false; });
     this.day = readingDay(new Date()); this.limit = 50;
   }
   async open() {
@@ -30,8 +39,11 @@ export class ReadingHistoryUI {
     const entries = this.log()?.entries || [], totals = new Map();
     const accepted = new Map(acceptedReadingEntries(entries).map(e => [e.id, e]));
     for (const e of accepted.values()) if (e.kind !== 'ask') totals.set(e.day, (totals.get(e.day) || 0) + e.words);
+    // Group before hiding excluded views so a hidden visit to another document
+    // still separates the readings on either side. Raw storage/export is intact.
     const selected = groupReadingEntries(entries.filter(e => e.day === this.day).map(e => ({ ...e,
-      rawWords: e.words, rawSeconds: e.seconds, words: accepted.get(e.id)?.words || 0, seconds: accepted.get(e.id)?.seconds || 0 })));
+      rawWords: e.words, rawSeconds: e.seconds, words: accepted.get(e.id)?.words || 0, seconds: accepted.get(e.id)?.seconds || 0 })))
+      .flatMap(group => groupReadingEntries(group.views.filter(view => view.words > 0)));
 
     this.body.append(node('p', `${number(totals.get(this.day) || 0)} words`, 'reading-total'));
     const average = averageReadingSpeed(entries);
@@ -53,7 +65,8 @@ export class ReadingHistoryUI {
     };
     this.body.append(exportLog);
     const label = node('label', 'Day '), date = node('input'); date.type = 'date'; date.value = this.day; date.max = readingDay(new Date());
-    date.onchange = () => { if (/^\d{4}-\d{2}-\d{2}$/.test(date.value)) { this.day = date.value; this.limit = 50; this.render(); } }; label.append(date); this.body.append(label);
+    date.onchange = () => { if (/^\d{4}-\d{2}-\d{2}$/.test(date.value)) { this.day = date.value; this.limit = 50; this.render(); } }; label.append(date);
+    const controls = node('div', null, 'reading-chart-controls'); controls.append(label, this.helpButton); this.body.append(controls);
     const chart = node('div', null, 'reading-chart'); chart.setAttribute('role', 'group'); chart.setAttribute('aria-label', 'Words read per day, 30 days ending on the selected day');
     const days = []; const end = new Date(`${this.day}T12:00:00`);
     for (let i = 29; i >= 0; i--) { const d = new Date(end); d.setDate(end.getDate() - i); days.push(readingDay(d)); }
@@ -65,10 +78,8 @@ export class ReadingHistoryUI {
       bar.onclick = () => { this.day = day; this.limit = 50; this.render(); }; chart.append(bar);
     }
     this.body.append(chart, node('p', `${days[0]} — ${days.at(-1)} · peak ${number(max === 1 && !totals.size ? 0 : max)} words/day`, 'muted'),
-      node('p', 'Estimated from text shown and then moved past at 10–900 words/minute. A session must include at least two distinct text panes read at that pace. Single-pane sessions do not count toward words, reading time or either average. Pauses over five minutes start a new session. Fast paging, image-only views and views idle for over five minutes do not count. The graph counts documents only; Ask includes visible questions and answers, excluding typing, recording and activity/status text. Rereading counts again. Days use the device’s local date.', 'reading-explanation muted'),
-      node('p', 'Every new pane view is kept with start/end times, including excluded views. Expand a viewing log below or export the data. Older history contains only readings accepted at the time.', 'reading-explanation muted'),
       node('p', this.sync.status?.() || 'Saved on this device', 'muted'));
-    if (!selected.length) this.body.append(node('p', 'No reading logged for this day yet. Read some text, then move on to the next page or document.', 'reading-empty'));
+    if (!selected.length) this.body.append(node('p', 'No counted reading for this day yet.', 'reading-empty'));
     const list = node('ol', null, 'reading-entries');
     for (const entry of selected.slice(0, this.limit)) {
       const time = at => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
@@ -78,7 +89,7 @@ export class ReadingHistoryUI {
       if (entry.count === 1) item.append(node('p', entry.excerpt, 'reading-excerpt'));
       const details = node('details', null, 'reading-view-log'), summary = node('summary', `Viewing log · ${entry.count} ${entry.count === 1 ? 'view' : 'views'}`);
       details.append(summary);
-      // Lazy rendering keeps a long day's unfiltered log inexpensive on phones.
+      // Lazy rendering keeps a long day's viewing details inexpensive on phones.
       details.ontoggle = () => {
         if (!details.open || details.children.length > 1) return;
         for (const view of [...entry.views].reverse()) {
