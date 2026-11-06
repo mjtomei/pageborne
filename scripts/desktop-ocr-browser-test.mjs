@@ -99,7 +99,49 @@ try {
   assert.equal(hash(await readFile(path.join(libraryDir, 'scan.pdf'))), hash(original));
   await runDaemon(config, { once: true, engineFactory, readMemory, dist });
   assert.equal(calls.length, 4, 'completed document is skipped on daemon restart');
+  // A dense page can exhaust the model's output budget without crashing it.
+  // Preserve it whole, persist the warning, and continue through the queue.
+  await writeFile(path.join(libraryDir, 'limited.pdf'), scannedPdfFixture(600, 800, Buffer.from(pixels), { pages: 2 }));
+  await writeFile(path.join(libraryDir, 'next.pdf'), scannedPdfFixture(600, 800, Buffer.from(pixels), { pages: 1 }));
+  const configValue = JSON.parse(await readFile(config));
+  await writeFile(config, JSON.stringify({ ...configValue, priority: ['limited.pdf'] }));
+  const fallbackCalls = [];
+  const fallbackEngine = () => ({
+    async infer(items) {
+      return { items: items.map(item => {
+        fallbackCalls.push(item.number);
+        return fallbackCalls.length === 1
+          ? { number: item.number, turn: item.turn, extracted: item.extracted,
+              fallback: { code: 'ocr-output-limit', reason: 'token-limit', generatedTokens: 4096, maxTokens: 4096 } }
+          : { number: item.number, turn: item.turn, extracted: item.extracted, markdown: 'Complete result' };
+      }) };
+    }, async stop() {},
+  });
+  await runDaemon(config, { once: true, engineFactory: fallbackEngine, readMemory, dist });
+  assert.deepEqual(fallbackCalls, [1, 2, 1], 'later pages and the next document finish after a limited page');
+  const after = await libraryManifest({ reading: true }, { libraryDir });
+  assert.ok(after.files.every(doc => Number.isFinite(doc.readingWords)));
+  const limited = after.files.find(doc => doc.name === 'limited.pdf');
+  const checkpoint = JSON.parse(await readFile(path.join(engineFolder, 'pages', limited.sha256, '1.json')));
+  assert.ok(checkpoint.extracted.text.length, 'raw geometry retained for later repair');
+  assert.equal(checkpoint.markdown, undefined, 'no partial model output committed');
+  const key = JSON.stringify([state.preparationVersion, state.pdfjs, limited.sha256, JSON.parse(artifact.key)[3]]);
+  const fallbackArtifact = JSON.parse(await readFile(path.join(engineFolder, 'prepared', hash(key)+'.json')));
+  const blocks = fallbackArtifact.saved.layout.blocks.filter(block => block.page === 1);
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].fullPage, true);
+  assert.equal(blocks[0].reflow, undefined);
+  assert.ok(fallbackArtifact.warnings.some(warning => warning.includes('Page 1: OCR reached its output limit')));
+  await runDaemon(config, { once: true, engineFactory: fallbackEngine, readMemory, dist });
+  assert.equal(fallbackCalls.length, 3, 'fallback checkpoint is not retried on every scan');
+  await rm(path.join(engineFolder, 'prepared', hash(key)+'.json'));
+  await runDaemon(config, { once: true, engineFactory: fallbackEngine, readMemory, dist });
+  const replayedFallback = JSON.parse(await readFile(path.join(engineFolder, 'prepared', hash(key)+'.json')));
+  assert.deepEqual(replayedFallback.saved.layout.blocks, fallbackArtifact.saved.layout.blocks,
+    'rebuilding from checkpoints preserves the whole-page fallback');
+  assert.equal(fallbackCalls.length, 3, 'checkpoint rebuild never retries truncated recognition');
   await writeFile(path.join(out, 'result.json'), JSON.stringify({ passed: true, inference: 'fixture; no GPU',
-    calls, pages: 3, sourceUnchanged: true, checkpointResume: true, phoneCacheRoundTrip: true }, null, 2));
+    calls, fallbackCalls, pages: 3, sourceUnchanged: true, checkpointResume: true,
+    wholePageFallback: true, laterDocumentsComplete: true, phoneCacheRoundTrip: true }, null, 2));
   console.log('Desktop OCR restart, original preservation and phone cache round trip passed.');
 } finally { await browser?.close(); await rm(root, { recursive: true, force: true }); }

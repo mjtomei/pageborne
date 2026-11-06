@@ -12,6 +12,7 @@ from PIL import Image
 from transformers import AutoModelForImageTextToText, AutoProcessor, StoppingCriteria, StoppingCriteriaList
 from correction import correct
 from guard import memory, pressure
+from inference_result import batch_results
 
 PROMPT = ('Extract all information from the main body of the document image and represent it '
           'in markdown format, ignoring headers and footers. Tables should be expressed in OTSL '
@@ -20,8 +21,12 @@ PROMPT = ('Extract all information from the main body of the document image and 
 
 
 class MemoryStop(StoppingCriteria):
+    def __init__(self):
+        self.tripped = False
+
     def __call__(self, input_ids, scores, **kwargs):
-        return pressure(memory())
+        self.tripped = self.tripped or pressure(memory())
+        return self.tripped
 
 
 def main():
@@ -53,18 +58,16 @@ def main():
         inputs = processor.apply_chat_template(conversations, tokenize=True, add_generation_prompt=True,
             return_dict=True, return_tensors='pt', padding=True, enable_thinking=False).to('cuda')
         torch.cuda.reset_peak_memory_stats()
+        memory_stop = MemoryStop()
+        generation_start = time.monotonic()
         with torch.inference_mode():
             tokens = model.generate(**inputs, do_sample=False, max_new_tokens=4096, max_time=300,
-                                    stopping_criteria=StoppingCriteriaList([MemoryStop()]))
+                                    stopping_criteria=StoppingCriteriaList([memory_stop]))
         torch.cuda.synchronize()
-        output = []
-        for item, row in zip(items, tokens[:, inputs['input_ids'].shape[1]:]):
-            values = row.tolist()
-            end = next((i+1 for i, token in enumerate(values) if token in eos_ids), None)
-            if end is None: raise RuntimeError('OCR interrupted or output truncated; no result committed')
-            markdown = processor.decode(values[:end], skip_special_tokens=True)
-            output.append({'number': item['number'], 'markdown': markdown,
-                           'extracted': correct(item['extracted'], markdown), 'turn': item['turn']})
+        output = batch_results(items, tokens[:, inputs['input_ids'].shape[1]:].tolist(), eos_ids,
+            lambda values: processor.decode(values, skip_special_tokens=True), correct,
+            time_limited=time.monotonic()-generation_start >= 300,
+            memory_stopped=memory_stop.tripped or pressure(memory()))
         print(json.dumps({'items': output, 'seconds': time.monotonic()-start,
                           'peakGpuBytes': torch.cuda.max_memory_allocated()}), flush=True)
         del inputs, tokens, conversations, output

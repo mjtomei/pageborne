@@ -16,6 +16,16 @@ import { ocrEngineIdentity } from './identity.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const digest = value => createHash('sha256').update(value).digest('hex');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+function validInference(item) {
+  if (!Array.isArray(item?.extracted?.text)) return false;
+  if (item.fallback === undefined) return typeof item.markdown === 'string';
+  const fallback = item.fallback;
+  return item.markdown === undefined && fallback?.code === 'ocr-output-limit'
+    && ['token-limit', 'time-limit'].includes(fallback.reason)
+    && Number.isSafeInteger(fallback.generatedTokens) && fallback.generatedTokens > 0
+    && fallback.maxTokens === 4096 && fallback.generatedTokens <= fallback.maxTokens
+    && (fallback.reason !== 'token-limit' || fallback.generatedTokens === fallback.maxTokens);
+}
 async function directory(folder) {
   await mkdir(folder, { mode: 0o700 }).catch(e => { if (e.code !== 'EEXIST') throw e; });
   const info = await lstat(folder);
@@ -99,7 +109,7 @@ export class Engine {
       if (!Array.isArray(result.items) || result.items.length !== items.length
           || new Set(result.items.map(item => item.number)).size !== items.length
           || result.items.some(item => !items.some(input => input.number === item.number)
-            || typeof item.markdown !== 'string' || !Array.isArray(item.extracted?.text))) {
+            || !validInference(item))) {
         this.failed = new Error('Incomplete OCR batch; no pages committed');
         await this.stop(); throw this.failed;
       }
@@ -234,7 +244,11 @@ export async function runDaemon(configFile, { once = false, engineFactory = (con
               const results = items.map(item => inferred.find(p => p.number === item.number)
                 || { number: item.number, turn: item.turn, extracted: item.extracted });
               await libraryOriginal(original, options);
-              for (const result of results) await atomic(path.join(pageFolder, result.number+'.json'), result);
+              for (const result of results) {
+                await atomic(path.join(pageFolder, result.number+'.json'), result);
+                if (result.fallback) console.log(JSON.stringify({ event: 'ocr-page-fallback', name: job.name,
+                  page: result.number, ...result.fallback }));
+              }
               return results;
             } finally { for (const item of staged) await unlink(item.image).catch(() => {}); }
           });

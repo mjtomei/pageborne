@@ -13,11 +13,18 @@ function fixture(t, behavior = 'reply', options = {}) {
       starts++;
       const program = `
         const readline = require('node:readline');
+        let requests = 0;
         if (${JSON.stringify(behavior)} !== 'startup-stall') console.log(JSON.stringify({ready:true}));
         readline.createInterface({input:process.stdin}).on('line', line => {
-          if (${JSON.stringify(behavior)} !== 'reply') return;
+          const behavior = ${JSON.stringify(behavior)};
+          if (!['reply','fallback','invalid-fallback'].includes(behavior)) return;
           const {items} = JSON.parse(line);
-          console.log(JSON.stringify({items:items.map(item=>({...item,markdown:'Recognized',extracted:{text:[]}}))}));
+          requests++;
+          console.log(JSON.stringify({items:items.map(item=>requests === 1 && behavior !== 'reply'
+            ? {number:item.number,turn:item.turn,extracted:item.extracted,
+                ...(behavior === 'invalid-fallback' ? {markdown:'Truncated prefix'} : {}),
+                fallback:{code:'ocr-output-limit',reason:'token-limit',generatedTokens:4096,maxTokens:4096}}
+            : {...item,markdown:'Recognized',extracted:{text:[]}})}));
         });
       `;
       return spawn(process.execPath, ['-e', program], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -35,6 +42,25 @@ test('intentional worker stop permits a subsequent document without latching a m
   const result = await engine.infer([{ number: 2 }]);
   assert.equal(result.items[0].number, 2);
   assert.equal(starts(), 2);
+});
+
+test('a bounded page fallback keeps the same process alive for the next document', async t => {
+  const { engine, starts } = fixture(t, 'fallback');
+  const extracted = { text: [{ text: 'Uncorrected geometry' }] };
+  const result = await engine.infer([{ number: 132, extracted, turn: 90 }]);
+  assert.deepEqual(result.items[0].extracted, extracted);
+  assert.equal(result.items[0].fallback.reason, 'token-limit');
+  assert.equal(result.items[0].markdown, undefined);
+  assert.equal((await engine.infer([{ number: 1 }])).items[0].markdown, 'Recognized');
+  assert.equal(engine.failed, undefined);
+  assert.equal(starts(), 1, 'no automatic CUDA reload');
+});
+
+test('a fallback cannot smuggle a partial transcription into a checkpoint', async t => {
+  const { engine, starts } = fixture(t, 'invalid-fallback');
+  await assert.rejects(engine.infer([{ number: 132, extracted: { text: [] }, turn: 0 }]), /Incomplete OCR batch/);
+  await assert.rejects(engine.infer([{ number: 1 }]), /Incomplete OCR batch/);
+  assert.equal(starts(), 1);
 });
 
 test('unexpected worker exits remain fatal and never automatically reload the model', async t => {

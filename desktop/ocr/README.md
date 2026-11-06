@@ -94,8 +94,15 @@ Larger batches are therefore disabled. These limits reduce risk; neither cgroups
 nor the PyTorch allocator can guarantee recovery from a GPU-driver hang or cap
 allocations made by other applications.
 
-Completed page results are atomically saved and reused after restart. A failed,
-truncated or interrupted inference batch is never published. The original PDF
+Completed page results are atomically saved and reused after restart. When a
+healthy model reaches its token or generation-time budget, that page is saved
+as an explicit image fallback: its incomplete transcription is discarded, its
+original page stays whole in the reader/gallery, and its geometry and reason
+are retained for later repair. Other pages and documents continue using the same
+model process. The daemon logs `ocr-page-fallback`; completed artifacts include
+the page warning. This does not raise the token, time, memory or batch limits.
+Memory watchdog stops, unexpected exits, malformed results and outer inference
+timeouts remain fatal and require an inspected restart. The original PDF
 stays unchanged. The cache identity includes the source bytes, model weights and
 processor configuration, worker/preparation code, and requested reading settings.
 Changing a PDF or layout format cannot reuse an incompatible preparation.
