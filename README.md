@@ -20,6 +20,8 @@ G2 supports native text, PDF reflow/figures, page reading, timed autoscroll and 
 
 History starts when this feature is installed, is stored separately from the originals, and remains after document deletion. With the updated optional reader-state extension, it syncs through the desktop library and merges offline entries without duplicates. Linked conversations open in a history viewer even when the source document is gone; the desktop session must still exist and be reachable. Days follow the reading device’s local date.
 
+Each library row shows the estimated time for the full text; the library footer totals all documents, even while filtering. Estimates use your time-weighted average from accepted reading-history entries across devices. Both the footer and Reading History show that average. Before any qualifying reading, estimates use a labelled 200 wpm default. PDF word counts come from completed local preparation or the updated desktop library extension, persist offline, and refresh on sync. Unknown PDF counts show a dash and a pending notice; a partial library total is marked with `+`. Images do not add words, and opening the library never triggers OCR.
+
 An optional [desktop OCR daemon](desktop/ocr/README.md) uses Xiaomi-OCR-0 to prepare scanned library PDFs ahead of reading. Completed preparations sync through the shared library and stay cached on the phone. The existing on-device OCR remains available when the desktop has no matching result.
 
 The library supports **1 GiB of originals across up to 1,000 documents** (16 MiB per PDF, 4 MiB per text file). Startup loads the catalog only; document contents load when opened or needed by sync. Existing files and reading positions migrate automatically. Available device storage still applies.

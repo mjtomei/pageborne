@@ -1,6 +1,7 @@
 import { base64ToBytes, bytesToBase64 } from './binary.js';
 import { readLocalFile, hashDocument, MAX_DOCUMENTS, MAX_LIBRARY_BYTES } from './library.js';
 import { libraryTimestamp } from './library-order.js';
+import { validWordCount } from './reading-estimates.js';
 
 const CHUNK_BYTES = 768 * 1024, encoder = new TextEncoder();
 const digest = async bytes => [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(n => n.toString(16).padStart(2, '0')).join('');
@@ -23,7 +24,7 @@ function validateManifest(remote) {
 export async function desktopLibrary(client, signal, name) {
   // Probe the authenticated file endpoint directly: syncing does not need a
   // running Claude/Codex process or an available model/account-info request.
-  try { return validateManifest(await client.api('pageborne/library', { signal, ...(name ? { query: { name } } : {}) })); }
+  try { return validateManifest(await client.api('pageborne/library', { signal, query: { reading: '1', ...(name ? { name } : {}) } })); }
   catch (error) {
     if (error.status === 404) throw new Error('Library sync needs the updated Pageborne extension in Even Terminal. Reading and Ask still work without it.');
     throw error;
@@ -49,6 +50,7 @@ export async function downloadLibraryFile(client, file, signal, progress = () =>
   }
   if (await digest(bytes) !== file.sha256) throw new Error('Document checksum mismatch. Sync again.');
   return { ...await readLocalFile(new File([bytes], file.name)),
+    ...(/\.pdf$/i.test(file.name) && validWordCount(file.readingWords) ? { readingWords: file.readingWords } : {}),
     ...(libraryTimestamp(file.addedAt) ? { addedAt: file.addedAt } : {}),
     ...(libraryTimestamp(file.modifiedAt) ? { modifiedAt: file.modifiedAt } : {}) };
 }
@@ -128,16 +130,18 @@ export async function syncLibrary({ client, snapshot, store, saved = {}, saveSta
     await persist();
   };
   await commitState();
-  // Backfill dates for already-synced originals without transferring or
+  // Backfill dates and prepared word counts without transferring or
   // rewriting PDF bodies, resetting their caches, or reopening the reader.
   const dates = remote.files.flatMap(file => {
     const expected = current.documents.find(doc => doc.id === file.name);
     if (!expected || !localFiles.some(local => local.name === file.name && local.sha256 === file.sha256)) return [];
     const addedAt = libraryTimestamp(file.addedAt)
       ? Math.min(file.addedAt, libraryTimestamp(expected.addedAt) || Infinity) : 0;
+    const readingWords = expected.format === 'pdf' && validWordCount(file.readingWords) ? file.readingWords : undefined;
     if (!(addedAt && addedAt !== expected.addedAt)
-      && !(libraryTimestamp(file.modifiedAt) && file.modifiedAt !== expected.modifiedAt)) return [];
-    return [{ id: file.name, addedAt: file.addedAt, modifiedAt: file.modifiedAt, expected }];
+      && !(libraryTimestamp(file.modifiedAt) && file.modifiedAt !== expected.modifiedAt)
+      && !(validWordCount(readingWords) && readingWords !== expected.readingWords)) return [];
+    return [{ id: file.name, addedAt: file.addedAt, modifiedAt: file.modifiedAt, readingWords, expected }];
   });
   if (dates.length && store.updateDates) {
     const result = await store.updateDates(dates); current = result.snapshot; await changed(result, null);

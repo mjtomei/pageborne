@@ -43,7 +43,7 @@ export function installHelpPopups() {
   helpPopup([document.getElementById('library-help-content')], { button: document.getElementById('library-help'), title: 'Library' });
   helpPopup([document.getElementById('glasses-hints')], { button: document.getElementById('hints-toggle'), title: 'Glasses controls' });
   helpPopup(['ask-voice-help', 'ask-voice-models', 'ask-voice-metrics'].map(id => document.getElementById(id)), { title: 'Ask about this', button: document.getElementById('ask-help') });
-  const candidates = [...document.querySelectorAll('p.muted')].filter(node => !node.closest('dialog.help-popup, #shared-settings')
+  const candidates = [...document.querySelectorAll('p.muted')].filter(node => !node.closest('dialog.help-popup, #shared-settings, #library-reading-summary')
     && !node.hasAttribute('role') && !['app-version', 'ask-context', 'ask-empty'].includes(node.id));
   const pending = new Set(candidates);
   for (const first of candidates) {

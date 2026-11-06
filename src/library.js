@@ -1,5 +1,8 @@
 import { base64ToBytes, bytesToBase64 } from './binary.js';
 import { libraryTimestamp } from './library-order.js';
+import { validWordCount } from './reading-estimates.js';
+import { readingWords } from './reading-activity.js';
+import { parseDocument } from './document.js';
 
 export const MAX_FILE_BYTES = 4 * 1024 * 1024;
 export const MAX_PDF_BYTES = 16 * 1024 * 1024;
@@ -21,6 +24,7 @@ export function localSnapshot(saved) {
     ...(doc.sha256 ? { sha256: doc.sha256 } : {}),
     bytes: doc.bytes ?? encoder.encode(doc.content).length,
     words: doc.words ?? countWords(doc.content),
+    ...(validWordCount(doc.readingWords) ? { readingWords: doc.readingWords } : {}),
     positionKey: doc.positionKey || `${saved?.server || 'local'}\n${doc.id}`,
     ...(libraryTimestamp(doc.addedAt) ? { addedAt: doc.addedAt } : {}),
     ...(libraryTimestamp(doc.modifiedAt) ? { modifiedAt: doc.modifiedAt } : {}),
@@ -59,7 +63,8 @@ export async function readLocalFile(file, onProgress = () => {}) {
   const content = parts.join('');
   if (content.includes('\0')) throw new Error('File contains binary data.');
   const title = (!/\.txt$/i.test(file.name) && content.replace(/^\uFEFF/, '').match(/^#{1,6}\s+(.+?)\s*#*\s*$/m)?.[1]) || file.name.replace(/\.[^.]+$/, '');
-  return { id: file.name, title, content, bytes: loaded, words: countWords(content) };
+  return { id: file.name, title, content, bytes: loaded, words: countWords(content),
+    readingWords: parseDocument(content).blocks.reduce((sum, block) => sum + readingWords(block.text), 0) };
 }
 
 export function addDocument(saved, document) {
@@ -95,16 +100,18 @@ export function replaceDocument(saved, document, expected) {
   }
   return result;
 }
-export function updateDocumentDates(saved, updates) {
+export function updateDocumentMetadata(saved, updates) {
   const snapshot = localSnapshot(saved);
   for (const update of updates) {
     const doc = snapshot.documents.find(doc => doc.id === update.id);
     if (!doc || !sameDocument(doc, update.expected)) continue;
     if (libraryTimestamp(update.addedAt)) doc.addedAt = Math.min(libraryTimestamp(doc.addedAt) || Infinity, update.addedAt);
     if (libraryTimestamp(update.modifiedAt)) doc.modifiedAt = update.modifiedAt;
+    if (validWordCount(update.readingWords)) doc.readingWords = update.readingWords;
   }
   return { snapshot };
 }
+export const updateDocumentDates = updateDocumentMetadata;
 export function sameDocument(prior, expected) {
   if (!prior || !expected) return !prior && !expected;
   if (prior.format !== expected.format) return false;
@@ -236,6 +243,7 @@ export class LocalLibrary {
     }));
   }
   async updateDates(updates) { return this.result(this.catalog(snapshot => updateDocumentDates(snapshot, updates))); }
+  async updateMetadata(updates) { return this.result(this.catalog(snapshot => updateDocumentMetadata(snapshot, updates))); }
   async remove(id, expected = undefined) {
     return this.result(this.catalog((snapshot, store) => {
       if (expected !== undefined) assertDocumentUnchanged(snapshot.documents.find(doc => doc.id === id), expected);

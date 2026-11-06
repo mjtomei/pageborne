@@ -1,4 +1,5 @@
 import { readingDay } from './reading-activity.js';
+import { averageReadingSpeed, readingSpeedLabel } from './reading-estimates.js';
 import { groupReadingEntries, readingGroupLocation } from './reading-history-groups.js';
 import { safeMarkdown } from './safe-markdown.js';
 import { marked } from 'marked';
@@ -28,6 +29,8 @@ export class ReadingHistoryUI {
     for (const e of entries) totals.set(e.day, (totals.get(e.day) || 0) + e.words);
     const selected = groupReadingEntries(entries.filter(e => e.day === this.day));
     this.body.append(node('p', `${number(totals.get(this.day) || 0)} words`, 'reading-total'));
+    const average = averageReadingSpeed(entries);
+    this.body.append(node('p', average == null ? 'Your average: no reading logged yet' : `${readingSpeedLabel(average)} · all recorded reading`, 'reading-average muted'));
     const label = node('label', 'Day '), date = node('input'); date.type = 'date'; date.value = this.day; date.max = readingDay(new Date());
     date.onchange = () => { if (/^\d{4}-\d{2}-\d{2}$/.test(date.value)) { this.day = date.value; this.limit = 50; this.render(); } }; label.append(date); this.body.append(label);
     const chart = node('div', null, 'reading-chart'); chart.setAttribute('role', 'group'); chart.setAttribute('aria-label', 'Words read per day, 30 days ending on the selected day');

@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { installLibrarySync } from '../integrations/even-terminal/pageborne-library.js';
 import { installReaderState, createReaderState } from '../integrations/even-terminal/pageborne-reader-state.js';
 import { pdfFixture } from '../test/fixtures/pdfs.mjs';
+import { showLibrary } from './ui-helpers.mjs';
 process.env.PAGEBORNE_RELEASE_ASK_ORIGINS = 'http://127.0.0.1:5173';
 
 const root = await mkdtemp(path.join(tmpdir(), 'reading-browser-')), libraryDir = path.join(root, 'library');
@@ -53,6 +54,13 @@ try {
         await page.locator('#file-picker').setInputFiles({ name: 'paper.md', mimeType: 'text/markdown', buffer: Buffer.from(prose) });
       }
       await expect(page.locator('[data-document-id="paper.md"]')).toBeAttached({ timeout: 30000 });
+      await expect(page.locator('#library-reading-speed')).toHaveText('No average yet · estimates use 200 wpm');
+      const paperTime = page.locator('[data-document-id="paper.md"] .document-reading-time');
+      await expect(paperTime).toHaveText(/\d+ min/);
+      if (mode === 'web') {
+        await expect(page.locator('[data-document-id="original.pdf"] .document-reading-time')).toHaveText('—');
+        await expect(page.locator('#library-reading-pending')).toContainText('1 document awaits');
+      }
       if (await page.locator('#library-panel').getAttribute('data-open') !== 'true') await page.locator('#library-toggle').click();
       await page.locator('[data-document-id="paper.md"] .document-card').click();
       await page.evaluate(() => window.__reading.sync());
@@ -70,6 +78,9 @@ try {
       await page.locator('#reading-history-open').click();
       await expect(page.locator('.reading-chart button')).toHaveCount(30);
       await expect(page.locator('.reading-total')).not.toHaveText('0 words');
+      const speed = await page.locator('#library-reading-speed').textContent();
+      assert.match(speed, /^Your average: [\d,]+ wpm$/);
+      await expect(page.locator('.reading-average')).toHaveText(`${speed} · all recorded reading`);
       await page.screenshot({ path: `test-results/reading-activity/${mode}-history.png` });
       await page.locator('#reading-history').getByRole('button', { name: 'Close', exact: true }).click();
       await page.evaluate(() => window.__reading.remove('paper.md'));
@@ -82,6 +93,7 @@ try {
       if (await page.locator('#library-panel').getAttribute('data-open') !== 'true') await page.locator('#library-toggle').click();
       await page.locator('#reading-history-open').click();
       await expect(page.locator('.reading-total')).not.toHaveText('0 words');
+      await expect(page.locator('#library-reading-speed')).toHaveText(speed);
       await expect(page.locator('.reading-entries')).toContainText('Reading record');
       // More than one list page of consecutive readings must collapse before
       // pagination, while a different document separates two runs of this one.
@@ -116,6 +128,29 @@ try {
         await page.locator('[data-document-id="original.pdf"] .document-card').click();
         await expect.poll(() => page.evaluate(() => window.__reading.units.length), { timeout: 30000 }).toBeGreaterThan(0);
         assert.ok((await page.evaluate(() => window.__reading.units)).every(unit => typeof unit.text === 'string'));
+        await expect(page.locator('[data-document-id="original.pdf"] .document-reading-time')).not.toHaveText('—');
+        await expect(page.locator('#library-reading-pending')).toBeHidden();
+        const duration = await page.locator('[data-document-id="original.pdf"] .document-reading-time').textContent();
+        await page.reload({ waitUntil: 'networkidle' });
+        await expect(page.locator('[data-document-id="original.pdf"] .document-reading-time')).toHaveText(duration);
+      }
+      if (await page.locator('#reading-history').isVisible()) await page.locator('#reading-history').getByRole('button', { name: 'Close', exact: true }).click();
+      for (const width of [320, 440, 834]) {
+        await page.setViewportSize({ width, height: 900 });
+        await showLibrary(page);
+        await page.waitForFunction(() => { const r = document.querySelector('#library-panel').getBoundingClientRect(); return r.left >= -1 && r.right <= innerWidth + 1; });
+        await expect(page.locator('#library-reading-speed')).toBeVisible();
+        const total = await page.locator('#library-reading-time').textContent();
+        await page.locator('#filter').fill('no matching text');
+        await expect(page.locator('#library-reading-time')).toHaveText(total, { timeout: 1000 });
+        await page.locator('#filter').fill('');
+        const fits = await page.locator('.document-info').evaluateAll(nodes => nodes.every(info => {
+          const r = info.getBoundingClientRect(), t = info.querySelector('.document-reading-time').getBoundingClientRect();
+          return Math.abs(t.right-r.right) < 1 && t.left >= r.left && t.right <= innerWidth;
+        }));
+        assert(fits, 'reading time is right aligned on the metadata row without overflowing');
+        assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+        await page.screenshot({ path: `test-results/reading-activity/${mode}-library-time-${width}.png` });
       }
       assert.deepEqual(errors, []);
       console.log(`${mode}: reading, fast paging, graph, deletion, archived chat, reload passed`);

@@ -11,6 +11,7 @@ import { PDF_PREPARATION_VERSION, packPdfPreparation, unpackPdfPreparation, PdfP
 import { CHUNK_CHARS } from '../src/phone-storage.js';
 import { createPdfLayout } from '../src/pdf-layout.js';
 import { desktopPdfCache } from '../src/desktop-pdf-cache.js';
+import { preparedReadingWords } from '../src/reading-estimates.js';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const engine = 'e'.repeat(64);
@@ -56,6 +57,23 @@ test('desktop preparation is optional; pending requests never expose partial pag
   f.state.heartbeat = 0; await f.announce();
   assert.equal((await libraryPreparation(f, f.options)).state, 'unavailable');
   assert.equal(await desktopPdfCache(f.local, f.client, f.name).read(f.key), null);
+});
+
+test('library word counts are opt-in, follow current PDF bytes, refresh after repair, and never start OCR', async t => {
+  const f = await fixture(t);
+  assert.equal((await libraryManifest({ reading: true }, f.options)).files[0].readingWords, undefined);
+  await f.publish();
+  assert.equal((await libraryManifest({}, f.options)).files[0].readingWords, undefined);
+  const words = preparedReadingWords(f.saved.layout);
+  assert.equal(words, 6);
+  assert.equal((await libraryManifest({ reading: true }, f.options)).files[0].readingWords, words);
+  f.saved.layout.blocks[0].reflow.rows[0].text += ' More words.'; await f.publish();
+  assert.equal((await libraryManifest({ reading: true }, f.options)).files[0].readingWords, 8);
+  f.saved.layout.preparation = { complete: false }; await f.publish();
+  assert.equal((await libraryManifest({ reading: true }, f.options)).files[0].readingWords, undefined);
+  await writeFile(path.join(f.options.libraryDir, f.name), '%PDF-replaced');
+  assert.equal((await libraryManifest({ reading: true }, f.options)).files[0].readingWords, undefined);
+  await assert.rejects(readFile(path.join(f.root, 'requests', hash(f.key)+'.json')), /ENOENT/);
 });
 
 test('verified desktop artifact downloads once, persists offline, and preserves whole figures', async t => {

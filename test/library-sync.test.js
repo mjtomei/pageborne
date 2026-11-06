@@ -54,6 +54,29 @@ test('library sync exchanges all originals, deduplicates identical files, and pe
   assert.equal(Object.keys(f.state().files).length, 4);
 });
 
+test('new PDF word counts sync without original transfers and survive native phone reload', async t => {
+  const f = await fixture(t, true);
+  await writeFile(path.join(f.libraryDir, 'book.pdf'), '%PDF-test');
+  await f.sync();
+  const original = f.store.snapshot.documents[0], api = f.client.api.bind(f.client);
+  f.client.api = async (route, options) => {
+    const result = await api(route, options);
+    if (route === 'pageborne/library') for (const file of result.files) file.readingWords = 12000;
+    return result;
+  };
+  f.calls.length = 0;
+  const result = await f.sync();
+  assert.equal(result.downloaded, 0); assert.equal(result.uploaded, 0);
+  assert.equal(f.calls.some(c => c.route.endsWith('/read') || c.route.endsWith('/chunk')), false);
+  assert.equal(f.store.snapshot.documents[0].revision, original.revision);
+  const reopened = new PhoneLibrary(f.kv, { lazy: true }); await reopened.read();
+  assert.equal(reopened.snapshot.documents[0].readingWords, 12000);
+  f.client.api = api;
+  await writeFile(path.join(f.libraryDir, 'book.pdf'), '%PDF-new content');
+  await f.sync();
+  assert.equal(f.store.snapshot.documents[0].readingWords, undefined, 'old counts cannot leak to replacement bytes');
+});
+
 test('one-sided edits transfer in either direction and preserve the phone reading identity', async t => {
   const f = await fixture(t); await f.store.save(await document('paper.md', 'First')); await f.sync();
   const key = f.store.snapshot.documents[0].positionKey;

@@ -43,10 +43,11 @@ import { automaticTerminalConfig, migrateTerminalPreferences } from './terminal-
 import { FullscreenReader, installHoldButton } from './fullscreen-reader.js';
 import { SharedReaderState, scopedReaderConfig } from './shared-reader-state.js';
 import { desktopPdfCache } from './desktop-pdf-cache.js';
-import { ReadingTracker, ReadingLog } from './reading-activity.js';
+import { ReadingTracker, ReadingLog, readingWords } from './reading-activity.js';
 import { browserReadingStorage, phoneReadingStorage, ReadingSync } from './reading-storage.js';
 import { glassesReadingUnits } from './reading-view.js';
 import { ReadingHistoryUI } from './reading-history-ui.js';
+import { averageReadingSpeed, readingSpeedLabel, documentReadingWords, preparedReadingWords, readingDuration, libraryReadingEstimate } from './reading-estimates.js';
 
 const $ = id => document.getElementById(id);
 let fullscreenReader, sharedReader, PdfDocument;
@@ -491,6 +492,7 @@ function searchSnippet(text, query, radius = 40) {
     document.createTextNode(end < clean.length ? `${clean.slice(at + query.trim().length, end).replace(/[\s.,;:…]+$/, '')}…` : clean.slice(at + query.trim().length, end))];
 }
 function renderLibrary() {
+  renderLibraryEstimates();
   $('library-sort').value = librarySort(preferences.librarySort);
   $('library-sort').disabled = !libraryReady;
   $('library-librarian').disabled = !libraryReady || !!askUI?.unavailableReason;
@@ -511,10 +513,12 @@ function renderLibrary() {
     const icon = document.createElement('span'); icon.className = 'file-icon'; icon.textContent = format; icon.setAttribute('aria-hidden', 'true');
     const description = document.createElement('span');
     const title = document.createElement('strong'); title.textContent = doc.title;
-    const info = document.createElement('small');
+    const info = document.createElement('small'); info.className = 'document-info';
     const saved = preferences.positions[doc.positionKey];
-    const details = [current ? 'Reading' : null, doc.format === 'pdf' ? 'PDF' : `${Math.max(1, Math.ceil(doc.words / 200))} min`, saved ? `${Math.round(saved.percent)}%` : null];
-    info.textContent = details.filter(Boolean).join(' · ');
+    const details = document.createElement('span'); details.className = 'document-details';
+    details.textContent = [current ? 'Reading' : format, saved ? `${Math.round(saved.percent)}%` : null].filter(Boolean).join(' · ');
+    const estimate = document.createElement('span'); estimate.className = 'document-reading-time';
+    info.append(details, estimate);
     const file = document.createElement('small'); file.className = 'file-name'; file.textContent = doc.id;
     description.append(title, info); if (doc.id !== doc.title) description.append(file);
     if (saved?.percent > 0) {
@@ -551,6 +555,34 @@ function renderLibrary() {
     }
     $('documents').append(entry);
   }
+  renderLibraryEstimates();
+}
+function renderLibraryEstimates() {
+  const average = averageReadingSpeed(readingLog?.entries), documents = snapshot?.documents || [];
+  const byId = new Map(documents.map(doc => [doc.id, doc]));
+  for (const entry of $('documents').children) {
+    const doc = byId.get(entry.dataset.documentId), estimate = entry.querySelector('.document-reading-time');
+    if (!doc || !estimate) continue;
+    const words = documentReadingWords(doc), duration = readingDuration(words, average);
+    estimate.textContent = duration;
+    estimate.title = words == null ? 'Reading time available once PDF text is prepared and synced.' : `${duration} for the full text · ${readingSpeedLabel(average)}`;
+    estimate.setAttribute('aria-label', estimate.title);
+  }
+  const total = libraryReadingEstimate(documents, average);
+  $('library-reading-time').textContent = `${total.duration}${total.unknown && total.duration !== '—' ? '+' : ''}`;
+  $('library-reading-speed').textContent = readingSpeedLabel(average);
+  $('library-reading-pending').hidden = !total.unknown;
+  $('library-reading-pending').textContent = `${total.unknown} ${total.unknown === 1 ? 'document awaits' : 'documents await'} a word count. Sync after PDF preparation to include ${total.unknown === 1 ? 'it' : 'them'}.`;
+}
+function readingLogChanged() { readingHistory.render(); renderLibraryEstimates(); }
+async function cacheReadingWords(doc, words) {
+  if (words == null || doc.readingWords === words || !store.updateMetadata) return;
+  try {
+    const result = await store.updateMetadata([{ id: doc.id, expected: doc, readingWords: words }]);
+    snapshot = result.snapshot;
+    if (active?.id === doc.id && active.revision === doc.revision) active.readingWords = words;
+    renderLibraryEstimates();
+  } catch (error) { diagnostics.error('reading-estimate-save-error', error); }
 }
 function openFromPhone(id) {
   selectDocument(id);
@@ -767,6 +799,7 @@ async function selectDocument(id, save = true) {
         } });
         const previous = layout;
         layout = views.body; pdfNotes = views.notes; pdfOpenMessage = null;
+        if (reflow && result.preparation?.complete !== false) void cacheReadingWords(active, preparedReadingWords(result));
         positionPicker = refreshNavigationPicker(positionPicker, layout);
         updatePdfReader(reader, resume ? null : previous, layout, resume || (pendingPdfPosition ? null : savedPosition), preferences.pdfEntryLines);
         if (resume) pendingPdfPosition = null;
@@ -805,6 +838,7 @@ async function selectDocument(id, save = true) {
       }));
     } else {
       buildLayout();
+      void cacheReadingWords(active, layout.blocks.reduce((sum, block) => sum + readingWords(block.text), 0));
       reader.setDocument(layout.maxY, restorePosition(preferences.positions[documentKey()]), layout.pages,
         (y, direction) => pageTurnY(layout, y, direction));
       reader.setSpeedDocument(layout, preferences.positions[documentKey()]?.speedCursor);
@@ -1805,14 +1839,14 @@ async function openLibrary() {
       delete preferences.preloadText; delete preferences.speed;
       applyAppTextSize();
       phonePreferences = nextPreferences;
-      readingLog = new ReadingLog(phoneReadingStorage(kv), () => readingHistory.render());
+      readingLog = new ReadingLog(phoneReadingStorage(kv), readingLogChanged);
       if (DEBUG && !voiceDiagnosticsInstalled) {
         const savedDiagnostics = new AtomicPhoneValue(kv, 'diagnostics');
         diagnostics.restore(await savedDiagnostics.read().catch(() => null));
         installDiagnosticCheckpoint(diagnostics, savedDiagnostics);
         voiceDiagnosticsInstalled = true;
       }
-    } else { snapshot = await browserStore.read(); readingLog = new ReadingLog(browserReadingStorage(browserStore), () => readingHistory.render()); }
+    } else { snapshot = await browserStore.read(); readingLog = new ReadingLog(browserReadingStorage(browserStore), readingLogChanged); }
     try { await readingLog.load(); } catch (error) { readingSaveError(error); }
     $('reading-history-open').disabled = false;
     await pdfPreparationCache.retain(snapshot.documents.map(doc => doc.id)).catch(error => diagnostics.error('pdf-cache-cleanup-error', error));

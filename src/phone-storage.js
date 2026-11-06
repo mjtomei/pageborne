@@ -158,6 +158,7 @@ export class PhoneLibrary {
       return result;
     });
   }
+  updateMetadata(updates) { return this.updateDates(updates); }
   save(document, onProgress = () => {}, migrating = false, expected = undefined) {
     return this.serialize(async () => {
       await this.recover();
