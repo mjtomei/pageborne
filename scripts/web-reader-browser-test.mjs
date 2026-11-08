@@ -148,7 +148,7 @@ try {
     if (!built) {
       await expect.poll(() => page.evaluate(() => typeof window.__releasePdfOpen),{timeout:30000}).toBe('function');
       await expect(page.locator('#preview-speak')).toBeDisabled();
-      await expect(page.locator('#preview-speak')).toHaveText('PDF loading');
+      await expect(page.locator('#preview-speak')).toHaveText('Document loading');
       assert.equal(await page.evaluate(() => window.__askUI.open()), false);
       await page.evaluate(() => { window.__holdPdfOpen = false; window.__releasePdfOpen(); });
     }
