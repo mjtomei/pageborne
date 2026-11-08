@@ -26,9 +26,12 @@ api.get('/pageborne/conversation', (req, res) => res.json({ version: 1, sessionI
 app.use('/api', api); const backend = app.listen(0, '127.0.0.1'); await new Promise(resolve => backend.once('listening', resolve));
 let browser;
 try {
-  browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true, args: ['--js-flags=--max-old-space-size=384'] });
+  browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true, args: ['--disable-gpu', '--js-flags=--max-old-space-size=384'] });
   for (const mode of ['release', 'web']) {
+    // Phone startup now syncs deletions, so each profile needs a fresh original.
+    await writeFile(path.join(libraryDir, 'paper.md'), prose);
     const vite = await createServer({ mode, cacheDir: `.state/vite-reading-${mode}`, clearScreen: false,
+      optimizeDeps: { entries: ['index.html'] },
       plugins: [{ name: 'reading-test', transform(code, id) {
         if (id.endsWith('/src/speech-setup.js')) return code.replace('start(initialize) {', 'start(initialize) { this.blocked = false; return Promise.resolve();');
         if (id.endsWith('/src/main.js')) return code + `
@@ -74,7 +77,7 @@ try {
       await page.goto(vite.resolvedUrls.local[0], { waitUntil: 'networkidle' });
       if (mode === 'release') {
         await expect(page.locator('#import')).toBeEnabled();
-        await page.locator('#file-picker').setInputFiles({ name: 'paper.md', mimeType: 'text/markdown', buffer: Buffer.from(prose) });
+        await expect(page.locator('[data-document-id="paper.md"] .document-details')).toContainText('On desktop');
       }
       await expect(page.locator('[data-document-id="paper.md"]')).toBeAttached({ timeout: 30000 });
       await expect(page.locator('#library-reading-speed')).toHaveText('No average yet · estimates use 200 wpm');
@@ -88,6 +91,7 @@ try {
       await page.locator('[data-document-id="paper.md"] .document-card').click();
       await page.evaluate(() => window.__reading.sync());
       await expect.poll(() => page.evaluate(() => window.__reading.units.length)).toBeGreaterThan(10);
+      await expect(page.locator('[data-document-id="paper.md"]')).toBeAttached();
       const initial = await page.evaluate(() => window.__reading.words);
       const initialSpeed = await page.locator('#library-reading-speed').textContent();
       await page.waitForTimeout(6500);

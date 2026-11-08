@@ -806,7 +806,7 @@ async function selectDocument(id, save = true) {
           return store.loadDocument(selected, { signal: controller.signal, progress: text => { if (version === selectionVersion) notice(text); } });
         });
         if (version !== selectionVersion) return;
-        active = document; snapshot = store.snapshot; pdfOpenMessage = null; notice('');
+        active = document; if (store.onDemand) snapshot = store.snapshot; pdfOpenMessage = null; notice('');
       } catch (error) {
         if (version !== selectionVersion || controller.signal.aborted) return;
         notice(`Could not open document: ${storageMessage(error)}`, true);

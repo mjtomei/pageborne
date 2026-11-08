@@ -73,7 +73,7 @@ export class SpeechSetup {
   }
   async attempt(retry) {
     if (this.busy) return;
-    this.busy = true; this.error = ''; this.storageFailure = false; this.recoveryStatus = ''; this.render();
+    this.busy = true; this.error = ''; this.storageFailure = false; this.storageUnavailable = false; this.recoveryStatus = ''; this.render();
     this.dialog.querySelector('#speech-setup-details').open = true;
     // Restore a small receipt before deciding whether a setup modal is needed.
     await new Promise(resolve => setTimeout(resolve, 25));
