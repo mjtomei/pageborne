@@ -22,6 +22,8 @@ export function localSnapshot(saved) {
     id: doc.id, title: doc.title, ...(typeof doc.content === 'string' ? { content: doc.content } : {}),
     ...(doc.revision ? { revision: doc.revision } : {}),
     ...(doc.sha256 ? { sha256: doc.sha256 } : {}),
+    ...(doc.remote ? { remote: { ...doc.remote } } : {}),
+    ...(typeof doc.availableOffline === 'boolean' ? { availableOffline: doc.availableOffline } : {}),
     bytes: doc.bytes ?? encoder.encode(doc.content).length,
     words: doc.words ?? countWords(doc.content),
     ...(validWordCount(doc.readingWords) ? { readingWords: doc.readingWords } : {}),
@@ -70,7 +72,7 @@ export async function readLocalFile(file, onProgress = () => {}) {
 export function addDocument(saved, document) {
   const snapshot = localSnapshot(saved);
   if (snapshot.documents.length >= MAX_DOCUMENTS) throw new Error('Library limit reached (1,000 files). Delete a file first.');
-  if (snapshot.documents.reduce((sum, doc) => sum + doc.bytes, 0) + document.bytes > MAX_LIBRARY_BYTES) {
+  if (snapshot.documents.reduce((sum, doc) => sum + (doc.remote ? 0 : doc.bytes), 0) + (document.remote ? 0 : document.bytes) > MAX_LIBRARY_BYTES) {
     throw new Error(`Library exceeds ${MAX_LIBRARY_BYTES / 1024 / 1024} MiB. Delete some files first.`);
   }
   const used = new Set(snapshot.documents.map(doc => doc.id));

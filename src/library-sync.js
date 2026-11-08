@@ -18,6 +18,8 @@ function validateManifest(remote) {
     || remote.files.some(f => typeof f.name !== 'string' || f.name.startsWith('.') || /[\x00-\x1f\x7f/\\]/.test(f.name)
       || encoder.encode(f.name).length > 220 || !/\.(md|markdown|txt|pdf)$/i.test(f.name) || !/^[a-f0-9]{64}$/.test(f.sha256)
       || !Number.isSafeInteger(f.bytes) || f.bytes < 0 || f.bytes > (/\.pdf$/i.test(f.name) ? 16 : 4) * 1024 * 1024)
+    || remote.files.some(f => f.title != null && (typeof f.title !== 'string' || f.title.length > 2000)
+      || f.words != null && (!Number.isSafeInteger(f.words) || f.words < 0))
     || new Set(remote.files.map(f => f.name)).size !== remote.files.length) throw new Error('The desktop returned an invalid library. No files were changed.');
   return remote;
 }
@@ -66,6 +68,15 @@ export async function downloadLibraryFile(client, file, signal, progress = () =>
     ...(libraryTimestamp(file.addedAt) ? { addedAt: file.addedAt } : {}),
     ...(libraryTimestamp(file.modifiedAt) ? { modifiedAt: file.modifiedAt } : {}) };
 }
+// Authenticate the library identity and exact bytes before an on-demand read.
+export async function downloadCatalogDocument(client, doc, { signal, progress } = {}) {
+  if (client.config?.endpoint !== doc.remote?.endpoint) throw Error('Reconnect to this document’s desktop library to download it.');
+  const remote = await desktopLibrary(client, signal, doc.id);
+  const file = remote.files.find(f => f.name === doc.id);
+  if (remote.id !== doc.remote.libraryId || file?.sha256 !== doc.sha256 || file.bytes !== doc.bytes)
+    throw Error('This document changed or is unavailable on the desktop. Sync your library and try again.');
+  return downloadLibraryFile(client, file, signal, progress);
+}
 function conflictName(name, sha256, used) {
   const dot = name.lastIndexOf('.'), ext = name.slice(dot); let stem = name.slice(0, dot);
   while (encoder.encode(stem).length > 150) stem = [...stem].slice(0, -1).join('');
@@ -100,6 +111,15 @@ export function planLibrarySync(localFiles, remote, baseline = {}) {
 export async function syncLibrary({ client, snapshot, store, saved = {}, saveState, changed = () => {}, progress = () => {}, signal }) {
   progress('Checking desktop library…');
   const remote = await desktopLibrary(client, signal), localFiles = [];
+  const source = { libraryId: remote.id, endpoint: client.config?.endpoint };
+  if (store.onDemand && !source.endpoint) throw Error('Connect to your desktop library before syncing.');
+  if (store.readOnly) {
+    const result = store.browseRemote(remote, source); await changed(result, null);
+    return { ...result, uploaded: 0, downloaded: 0, listed: remote.files.length, deleted: 0, conflicts: 0,
+      readOnly: true, directory: remote.directory, skipped: remote.skipped || [] };
+  }
+  if (store.onDemand && snapshot.documents.some(d => d.remote && (d.remote.libraryId !== source.libraryId || d.remote.endpoint !== source.endpoint)))
+    throw Error('These documents belong to a different desktop library. Reconnect to that library before syncing.');
   const load = async doc => {
     signal?.throwIfAborted();
     return typeof doc.content === 'string' ? doc : store.loadDocument(doc, { signal });
@@ -114,7 +134,9 @@ export async function syncLibrary({ client, snapshot, store, saved = {}, saveSta
     }
     localFiles.push({ name: doc.id, bytes: doc.bytes, sha256 });
   }
-  const baseline = saved.id === remote.id ? saved.files || {} : {};
+  const baseline = { ...(store.syncBaselineTrusted !== false && saved.id === remote.id ? saved.files || {} : {}) };
+  // A saved remote reference is itself a baseline when preferences were lost.
+  if (store.onDemand) for (const doc of snapshot.documents) if (doc.remote && !baseline[doc.id]) baseline[doc.id] = doc.remote.sha256;
   const actions = planLibrarySync(localFiles, remote, baseline);
   const finalFiles = new Map(localFiles.map(f => [f.name, f]));
   for (const action of actions) {
@@ -123,15 +145,25 @@ export async function syncLibrary({ client, snapshot, store, saved = {}, saveSta
     if (action.kind === 'conflict') { finalFiles.set(action.copy, action.file); finalFiles.set(action.name, action.remote); }
   }
   const totalBytes = [...finalFiles.values()].reduce((sum, f) => sum + f.bytes, 0);
-  if (finalFiles.size > MAX_DOCUMENTS || totalBytes > MAX_LIBRARY_BYTES) throw Object.assign(new Error(
+  if (finalFiles.size > MAX_DOCUMENTS || !store.onDemand && totalBytes > MAX_LIBRARY_BYTES) throw Object.assign(new Error(
     `The synced library needs ${(totalBytes / 1024 / 1024).toFixed(1)} MiB for ${finalFiles.size} files. The phone limit is ${MAX_LIBRARY_BYTES / 1024 / 1024} MiB / ${MAX_DOCUMENTS.toLocaleString('en-US')} files. No files were changed.`),
   { code: 'library-capacity', totalBytes, files: finalFiles.size });
   let current = snapshot; const hashes = { ...baseline };
-  const counts = { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0 };
+  const counts = { uploaded: 0, downloaded: 0, deleted: 0, conflicts: 0, ...(store.onDemand ? { listed: 0 } : {}) };
   const persist = async () => saveState({ id: remote.id, directory: remote.directory, files: { ...hashes }, at: Date.now() });
   const put = async (doc, name) => {
     const expected = current.documents.find(d => d.id === name) || null;
     const result = await store.put(doc, expected); current = result.snapshot; await changed(result, name);
+  };
+  const receive = async file => {
+    if (!store.onDemand) return put(await downloadLibraryFile(client, file, signal, progress), file.name);
+    const expected = current.documents.find(d => d.id === file.name) || null;
+    const result = await store.putRemote(file, source, expected); current = result.snapshot; await changed(result, file.name);
+    counts.listed++;
+  };
+  const confirm = async files => {
+    if (!store.onDemand) return;
+    const result = await store.confirmRemote(files, source); current = result.snapshot; await changed(result, null);
   };
   const commitState = async () => {
     // Equal files, including already completed operations from a previous
@@ -141,6 +173,8 @@ export async function syncLibrary({ client, snapshot, store, saved = {}, saveSta
       && !remote.skipped?.some(f => f.name === name)) delete hashes[name];
     await persist();
   };
+  // Confirm matching copies before reclaiming any old, fully synced bodies.
+  await confirm(remote.files);
   await commitState();
   // Backfill dates and prepared word counts without transferring or
   // rewriting PDF bodies, resetting their caches, or reopening the reader.
@@ -164,10 +198,11 @@ export async function syncLibrary({ client, snapshot, store, saved = {}, saveSta
     const doc = ['upload', 'conflict'].includes(action.kind) ? await load(meta) : meta;
     if (action.kind === 'upload') {
       await uploadLibraryFile(client, action.file, documentBytes(doc), action.expected, signal, progress);
+      await confirm([action.file]);
       hashes[action.name] = action.file.sha256; counts.uploaded++;
     } else if (action.kind === 'download') {
-      await put(await downloadLibraryFile(client, action.file, signal, progress), action.name);
-      hashes[action.name] = action.file.sha256; counts.downloaded++;
+      await receive(action.file);
+      hashes[action.name] = action.file.sha256; if (!store.onDemand) counts.downloaded++;
     } else if (action.kind === 'remove-phone') {
       const result = await store.remove(action.name, doc); current = result.snapshot; await changed(result, action.name);
       delete hashes[action.name]; counts.deleted++;
@@ -178,9 +213,10 @@ export async function syncLibrary({ client, snapshot, store, saved = {}, saveSta
       // Save both copies before replacing the phone's original. A dropped
       // response or interrupted save reuses this deterministic conflict name.
       await uploadLibraryFile(client, action.file, documentBytes(doc), action.expected, signal, progress);
-      await put(await downloadLibraryFile(client, action.remote, signal, progress), action.name);
+      await receive(action.remote);
       hashes[action.name] = action.remote.sha256; await persist();
       await put({ ...doc, id: action.copy, positionKey: undefined }, action.copy);
+      await confirm([action.file]);
       hashes[action.copy] = action.file.sha256; counts.conflicts++;
     }
     await persist();

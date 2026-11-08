@@ -1,16 +1,17 @@
 // Even Hub can use a new loopback port for each launch. Back up bounded state
 // through its durable phone storage, without queueing one write per text frame.
 export function installDiagnosticCheckpoint(diagnostics, storage, { delay = 1000 } = {}) {
-  let timer, writing = null, pending = false;
+  let timer, writing = null, pending = false, unavailable = false;
   const save = () => {
-    timer = null; if (writing || !pending) return writing;
+    timer = null; if (unavailable || writing || !pending) return writing;
     pending = false;
-    writing = Promise.resolve().then(() => storage.write(JSON.parse(JSON.stringify(diagnostics.summary(40))))).catch(() => {}).finally(() => {
+    writing = Promise.resolve().then(() => storage.write(JSON.parse(JSON.stringify(diagnostics.summary(40))))).catch(error => { if (['phone-storage-write', 'phone-storage-unavailable'].includes(error.code)) unavailable = true; }).finally(() => {
       writing = null; if (pending) schedule();
     });
     return writing;
   };
   const schedule = () => {
+    if (unavailable) return;
     pending = true;
     if (!timer && !writing) timer = setTimeout(save, delay);
   };

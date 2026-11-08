@@ -21,7 +21,7 @@ const fixtures = ['conformer', 'zipformer', 'moonshine'].map((id, i) => {
     sha256: createHash('sha256').update(bytes).digest('hex'), url: `https://models.invalid/${id}.onnx` }] } };
 });
 const vite = await createServer({ mode: 'debug', cacheDir: '.state/vite-storage-recovery', clearScreen: false,
-  optimizeDeps: { exclude: ['@pageborne/browser-stt'] },
+  optimizeDeps: { entries: ['index.html'], exclude: ['@pageborne/browser-stt'] },
   plugins: [displayProbe(), { name: 'quota-fixtures', enforce: 'pre', transform(code, id) {
     if (id.split('?')[0].endsWith('/ensemble-speech.js')) return code.replace(/import manifests from [^;]+;/, `const manifests = ${JSON.stringify(fixtures.map(f => f.model))};`);
   } }], server: { host: '127.0.0.1', port: 0, hmr: false, watch: null } });
@@ -138,10 +138,10 @@ try {
   await expect(page.locator('#speech-setup-details')).not.toHaveAttribute('open');
   await expect(page.locator('#speech-setup-skip')).toBeInViewport({ ratio: 1 });
   await expect(page.locator('#speech-setup-retry')).toBeInViewport({ ratio: 1 });
-  await expect.poll(() => page.evaluate(() => __askUI.diagnostics.errors.at(-1)?.context.failure)).toBe('phone-storage-write');
+  await expect.poll(() => page.evaluate(() => __askUI.diagnostics.errors.findLast(e => e.type === 'local-speech-error')?.context.failure)).toBe('phone-storage-write');
   await page.locator('#speech-setup').screenshot({ path: `${out}/storage-failure.png` });
   await page.locator('#speech-setup-skip').click();
-  await expect(page.locator('#import')).toBeEnabled();
+  await expect(page.locator('#library-sync')).toBeEnabled();
   await showLibrary(page); await expect(page.locator('[data-document-id="kept.md"]')).toBeVisible();
   await assertPreserved();
   await page.locator('#library-librarian').click();

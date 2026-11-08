@@ -115,6 +115,7 @@ export class SpeechSetup {
       this.models.close();
       this.blocked = false; cancelTimeout(this.timer); this.dialog.close(); this.resolve(); this.pending = null;
     } catch (error) {
+      this.storageUnavailable = error.code === 'phone-storage-unavailable';
       this.storageFailure = error.code === 'phone-storage-write' || error.name === 'QuotaExceededError' || /(?:phone|app) storage|quota/i.test(error.message);
       this.recoveryStatus = '';
       this.error = error.message || 'Voice setup could not finish. Retry when connected.';
@@ -165,13 +166,13 @@ export class SpeechSetup {
     this.dialog.querySelector('#speech-setup-help').textContent = modelDownloadSummary(this.models.store, ready)
       + ' Successful checks are saved on this device. Checks repeat if the models, device or speech runtime change; models load when you speak.';
     const status = this.dialog.querySelector('[role=status]');
-    const text = this.recoveryStatus || (this.storageFailure && this.error
+    const text = this.recoveryStatus || (this.storageUnavailable ? this.error + ' You can continue reading from your desktop without voice.' : '') || (this.storageFailure && this.error
       ? 'Even could not save voice setup data. This does not mean your phone is full. You can continue reading without voice, or retry setup.'
       : this.error) || (ready ? 'All three models passed. Opening Pageborne…' : 'Keep Pageborne open while voice is prepared.');
     if (status.textContent !== text) status.textContent = text;
     const retry = this.dialog.querySelector('#speech-setup-retry'); retry.hidden = !this.error; retry.disabled = this.busy;
     const free = this.dialog.querySelector('#speech-setup-free-space');
-    free.hidden = !(this.error && this.storageFailure && this.recoverStorage); free.disabled = this.busy;
+    free.hidden = !(this.error && this.storageFailure && !this.storageUnavailable && this.recoverStorage); free.disabled = this.busy;
     this.dialog.querySelector('#speech-setup-recovery-help').hidden = free.hidden;
     const skip = this.dialog.querySelector('#speech-setup-skip'); skip.hidden = !(this.error && this.initialized); skip.disabled = this.busy;
   }

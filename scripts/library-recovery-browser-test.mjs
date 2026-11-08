@@ -14,11 +14,12 @@ const endpoint = 'https://library-fixture.invalid';
 process.env.PAGEBORNE_ASK_ORIGINS = endpoint;
 const out = 'test-results/library-recovery'; await mkdir(out, { recursive: true });
 const server = await createServer({ mode: 'debug', cacheDir: '.state/vite-library-recovery', clearScreen: false,
+  optimizeDeps: { entries: ['index.html'] },
   plugins: [{ name: 'skip-inference', transform(code, id) {
     if (id.endsWith('/src/speech-setup.js')) return code.replace('start(initialize) {', 'start(initialize) { this.blocked = false; return Promise.resolve();');
   } }], server: { host: '127.0.0.1', port: 0, hmr: false, watch: null } });
 await server.listen();
-const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true });
+const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true, args: ['--disable-gpu'] });
 const values = new Map(), errors = [], requests = [], report = { nativeWriteRejections: 0 };
 const kv = { get: async key => values.get(key) || '', set: async (key, value) => { values.set(key, value); } };
 const library = new PhoneLibrary(kv); await library.read();
@@ -63,14 +64,16 @@ await context.addInitScript(() => {
 });
 const page = await context.newPage(); page.on('pageerror', error => errors.push(error.message));
 try {
-  await page.goto(server.resolvedUrls.local[0]); await expect(page.locator('#import')).toBeEnabled();
+  await page.goto(server.resolvedUrls.local[0]); releaseManifest(); await expect(page.locator('#import')).toBeEnabled();
   const displayFailure = await page.evaluate(() => JSON.parse(localStorage.getItem('even-reader:diagnostics:v1')).errors.find(e => e.type === 'display-error'));
   assert.equal(displayFailure.context.resultName, 'invalid'); assert.equal(displayFailure.context.validation, 'valid');
   await showLibrary(page);
   await expect.poll(() => requests.some(r => r.path.endsWith('/pageborne/library'))).toBe(true);
-  quota = usage(); rejectNonempty = true; releaseManifest();
+  releaseManifest();
+  await expect(page.locator('#library-sync')).toBeEnabled();
   await expect(page.locator('.document-reading-time').filter({ hasText: '—' })).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('even-reader:diagnostics:v1')).errors.some(e => e.type === 'library-word-count-error'))).toBe(true);
+  await expect(page.locator('#library-sync')).toBeEnabled();
+  quota = usage(); rejectNonempty = true;
   assert(requests.every(r => !r.path.includes('/library/') && !(r.path.endsWith('/library') && !['GET', 'OPTIONS'].includes(r.method))), 'count refresh must never change desktop files');
   const row = page.locator(`[data-document-id="${target.id}"]`);
   await row.locator('.document-delete').tap();

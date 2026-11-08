@@ -285,3 +285,21 @@ test('older HTTP clients never receive unfiltered panes and new clients can fetc
     assert.equal(current.entries.length, 2); assert.deepEqual(current.entries.find(e => e.version === 2), raw[0]);
   } finally { await new Promise(resolve => server.close(resolve)); await rm(root, { recursive: true, force: true }); }
 });
+
+test('unavailable native storage still syncs observations to desktop without claiming a local save', async () => {
+  const { tracker, events, view, tick } = fixture(); tracker.observe(view(0, 60)); tick(12000, view(60, 120));
+  const log = new ReadingLog({ read: async () => [], merge: async () => { throw Object.assign(Error('Unavailable'), { code: 'phone-storage-unavailable' }); } });
+  await assert.rejects(log.add(events));
+  let saved = [], offline = false, uploads = 0;
+  const client = { api: async (route, options) => {
+    if (offline) throw Error('Offline');
+    if (route === 'pageborne/reading-activity') return { observations: 2, days: saved.length ? [{ day: events[0].day, revision: 'r1' }] : [] };
+    if (options?.body) { saved = mergeReadingEntries(saved, options.body.entries); uploads++; return { revision: 'r1' }; }
+    return { entries: saved, revision: 'r1' };
+  } };
+  const sync = new ReadingSync({ log: () => log, client: () => client, scope: () => events[0].scope, sessions: e => e.sessions });
+  await sync.sync(); assert.equal(saved.length, 1); assert.equal(log.pending.size, 1);
+  assert.equal(sync.status, 'Synced with desktop · device save unavailable');
+  await sync.sync(); assert.equal(uploads, 1);
+  offline = true; await sync.sync(); assert.match(sync.status, /Not saved on this device/);
+});

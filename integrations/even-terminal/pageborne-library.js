@@ -140,6 +140,11 @@ export async function libraryManifest({ name: selected, reading = false } = {}, 
       const doc = await documentAt(root, name); if (!doc) continue;
       await archive(root, doc);
       const file = metadata(doc);
+      if (reading && !/\.pdf$/i.test(name)) {
+        const text = doc.data.toString('utf8');
+        file.title = ((!/\.txt$/i.test(name) && text.replace(/^\uFEFF/, '').match(/^#{1,6}\s+(.+?)\s*#*\s*$/m)?.[1]) || name.replace(/\.[^.]+$/, '')).slice(0, 2000);
+        file.words = (text.match(/\S+/g) || []).length;
+      }
       // Optional, small metadata only. Never start OCR or send whole prepared
       // books just to display the library's reading-time estimates.
       if (reading && /\.pdf$/i.test(name)) {

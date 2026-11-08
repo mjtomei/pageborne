@@ -191,7 +191,7 @@ export class PdfPreparationCache {
     });
   }
   async retain(ids) {
-    const stale = await this.serialize(async () => { await this.recover(); return this.entries.filter(entry => !ids.includes(entry.id)).map(entry => entry.id); });
+    const stale = await this.serialize(async () => { await this.recover(); return this.entries.filter(entry => (!ids.includes(entry.id) || entry.body.length > this.maxEntryChars)).map(entry => entry.id); });
     for (const id of stale) await this.remove(id);
   }
 }

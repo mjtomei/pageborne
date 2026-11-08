@@ -24,11 +24,11 @@ import { speedTitleBitmap } from './speed-title.js';
 import { pdfSettingsFor, normalizePdfSettings, usePdfDefaults, forgetPdfSettings } from './pdf-settings.js';
 import { GlassesDisplay, paintFrame } from './glasses.js';
 import { LocalLibrary } from './library.js';
-import { syncLibrary, desktopLibrary, preparedWordUpdates } from './library-sync.js';
+import { syncLibrary, desktopLibrary, preparedWordUpdates, downloadCatalogDocument } from './library-sync.js';
 import { EvenTerminal } from './ask-terminal.js';
 import { connectionMode } from './ask-connections.js';
 import { waitForEvenAppBridge } from '@evenrealities/even_hub_sdk';
-import { PhoneLibrary, PhonePreferences, AtomicPhoneValue, bridgeStorage, retryAfterStorageRecovery } from './phone-storage.js';
+import { PhoneLibrary, PhonePreferences, AtomicPhoneValue, bridgeStorage, retryAfterStorageRecovery, storageWriteRejected, storageUnavailable } from './phone-storage.js';
 import { waitForSpeechHost } from './speech-storage.js';
 import { PdfPreparationCache, browserPdfStorage } from './pdf-cache.js';
 import { readFileInBackground } from './file-reader.js';
@@ -114,7 +114,7 @@ function savePreferences() {
   // defaults: a newer timestamp would make them replace the saved phone state.
   if (!libraryReady) return;
   preferences.updatedAt = Math.max(Date.now(), (Number(preferences.updatedAt) || 0) + 1);
-  phonePreferences?.schedule(preferences);
+  if (!store.readOnly) phonePreferences?.schedule(preferences);
   try { localStorage.setItem(localKey, JSON.stringify(preferences)); }
   catch { if (!phonePreferences) notice('Phone storage is full or unavailable. Keep this page open to retain your place.', true); }
 }
@@ -520,10 +520,14 @@ function renderLibraryAvailability() {
   $('library-librarian').disabled = !libraryReady || !!askUI?.unavailableReason;
   $('library-sync').disabled = libraryBusy || !libraryReady;
   renderSyncSummary();
-  $('import').disabled = libraryBusy || !libraryReady;
+  $('import').disabled = libraryBusy || !libraryReady || !!store.readOnly;
+  const status = $('library-storage-status'); status.hidden = !store.onDemand;
+  if (store.onDemand) status.textContent = store.readOnly
+    ? 'Even storage is unavailable. You can read from the desktop while connected. Imports, deletion and offline saves are paused until you reopen the app. Reading history will sync to the desktop when connected; keep this page open until it has synced.'
+    : `Documents download when opened. Offline document cache: ${(store.cacheUsage / 1048576).toFixed(1)} / 32 MiB encoded data. Older desktop-backed copies are cleared automatically; unsynced imports are kept.`;
 }
 function renderDeleteStatus() {
-  for (const button of $('documents').querySelectorAll('.document-delete, .delete-actions button')) button.disabled = libraryBusy;
+  for (const button of $('documents').querySelectorAll('.document-delete, .delete-actions button')) button.disabled = libraryBusy || !!store.readOnly;
   const status = $('documents').querySelector('.delete-status');
   if (status) { status.textContent = deleteStatus; status.hidden = !deleteStatus; }
   const confirm = $('documents').querySelector('[data-confirm-delete]');
@@ -550,7 +554,7 @@ function renderLibrary() {
     const info = document.createElement('small'); info.className = 'document-info';
     const saved = preferences.positions[doc.positionKey];
     const details = document.createElement('span'); details.className = 'document-details';
-    details.textContent = [current ? 'Reading' : format, saved ? `${Math.round(saved.percent)}%` : null].filter(Boolean).join(' · ');
+    details.textContent = [current ? 'Reading' : format, saved ? `${Math.round(saved.percent)}%` : null, doc.remote ? doc.availableOffline ? 'Offline' : 'On desktop' : null].filter(Boolean).join(' · ');
     const estimate = document.createElement('span'); estimate.className = 'document-reading-time';
     info.append(details, estimate);
     const file = document.createElement('small'); file.className = 'file-name'; file.textContent = doc.id;
@@ -569,7 +573,7 @@ function renderLibrary() {
       const confirm = document.createElement('div'); confirm.className = 'delete-confirm';
       const label = document.createElement('p'); label.className = 'delete-question';
       const question = document.createElement('strong'); question.textContent = `Delete ${doc.id} from Pageborne?`;
-      const detail = document.createElement('span'); detail.textContent = Object.values(preferences.librarySync || {}).some(state => state.files?.[doc.id])
+      const detail = document.createElement('span'); detail.textContent = doc.remote || Object.values(preferences.librarySync || {}).some(state => state.files?.[doc.id])
         ? 'Its position and bookmarks go too. Next sync removes the desktop copy; a recoverable version stays in desktop history.'
         : 'Its position and bookmarks go too. Your original file stays where it is.';
       label.append(question, detail);
@@ -584,7 +588,7 @@ function renderLibrary() {
     } else {
       const remove = document.createElement('button'); remove.className = 'document-delete';
       remove.innerHTML = '<svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3.5 5h11M7 5V3.5h4V5M5 5l.7 9.5h6.6L13 5"/></svg>';
-      remove.setAttribute('aria-label', `Delete ${doc.id}`); remove.disabled = libraryBusy;
+      remove.setAttribute('aria-label', `Delete ${doc.id}`); remove.disabled = libraryBusy || !!store.readOnly;
       remove.onclick = () => { reader.pause(); deleteId = doc.id; deleteStatus = ''; deletionPending = false; renderLibrary(); $('documents').querySelector('[data-confirm-delete]')?.focus({ preventScroll: true }); };
       entry.append(remove);
     }
@@ -611,7 +615,7 @@ function renderLibraryEstimates() {
   $('library-reading-pending').hidden = !total.unknown;
   $('library-reading-pending').textContent = readingCountsRefresh ? 'Checking desktop word counts…'
     : `${total.unknown} ${total.unknown === 1 ? 'document awaits' : 'documents await'} a word count. Connect to the desktop or open the document to update its reading time.`;
-  diagnostics.library = { documents: documents.length, missingWordCounts: total.unknown, refreshingWordCounts: !!readingCountsRefresh };
+  diagnostics.library = { documents: documents.length, missingWordCounts: total.unknown, refreshingWordCounts: !!readingCountsRefresh, onDemand: !!store.onDemand, readOnly: !!store.readOnly, cachedCharacters: store.cacheUsage, storageHealth: store.kv?.health };
 }
 async function refreshReadingCounts() {
   if (!libraryReady || libraryBusy || readingCountsRefresh || Date.now() - readingCountsAttempt < 60000
@@ -799,10 +803,10 @@ async function selectDocument(id, save = true) {
       try {
         const document = await trackPdfPreparation(async () => {
           controller.signal.throwIfAborted();
-          return store.loadDocument(selected, { signal: controller.signal });
+          return store.loadDocument(selected, { signal: controller.signal, progress: text => { if (version === selectionVersion) notice(text); } });
         });
         if (version !== selectionVersion) return;
-        active = document; pdfOpenMessage = null; notice('');
+        active = document; snapshot = store.snapshot; pdfOpenMessage = null; notice('');
       } catch (error) {
         if (version !== selectionVersion || controller.signal.aborted) return;
         notice(`Could not open document: ${storageMessage(error)}`, true);
@@ -1274,9 +1278,19 @@ async function startLibrarySync() {
       },
     });
     await sharedReader.sync();
-    const detail = `${result.uploaded} sent · ${result.downloaded} received · ${result.deleted} deleted${result.conflicts ? ` · ${result.conflicts} conflicts kept as copies` : ''}`;
+    if (result.readOnly) { syncProgress(`Opened ${result.listed} desktop catalog entries. Files download when opened.`, 'Read-only desktop library'); return; }
+    const detail = `${result.uploaded} sent · ${result.listed == null ? result.downloaded + ' received' : result.listed + ' catalog entries updated'} · ${result.deleted} deleted${result.conflicts ? ` · ${result.conflicts} conflicts kept as copies` : ''}`;
     syncProgress(`Synced ${result.directory}. ${detail}${result.skipped.length ? `. ${result.skipped.length} desktop files skipped: ${result.skipped.map(f => f.name).join(', ')}` : ''}`, result.skipped.length ? 'Synced; some files skipped' : result.conflicts ? 'Synced; kept both copies' : 'Library synced');
   } catch (error) {
+    if (!controller.signal.aborted && store.onDemand && (storageUnavailable(error) || storageWriteRejected(error))) {
+      store.readOnly = true;
+      try {
+        const client = new EvenTerminal(askUI.readConfig(), askUI.options()), remote = await desktopLibrary(client, controller.signal);
+        snapshot = store.browseRemote(remote, { endpoint: client.config.endpoint, libraryId: remote.id }).snapshot;
+        renderLibrary(); syncProgress('Desktop catalog opened. Even storage is unavailable; downloads will stay in this session.', 'Read-only desktop library');
+        return;
+      } catch (fallbackError) { diagnostics.error('library-fallback-error', fallbackError); }
+    }
     const message = controller.signal.aborted ? 'Sync cancelled. Completed files are saved; sync again to continue.'
       : error.status === 409 ? 'A file changed during sync. Sync again to preserve both copies.' : storageMessage(error);
     if (!controller.signal.aborted) diagnostics.error('library-sync-error', new Error('Library sync failed.'), {
@@ -1304,7 +1318,7 @@ function renderSyncSummary() {
   const ready = connectionMode(config) === 'terminal' && !!config.endpoint;
   const endpoint = String(config.endpoint || '').trim().replace(/\/+$/, '');
   const last = preferences.librarySync?.[endpoint]?.at || 0;
-  const text = librarySync ? 'Syncing…' : !ready ? 'Not set up' : last ? `Synced ${relativeTime(last)}` : 'Not synced yet';
+  const text = librarySync ? 'Syncing…' : store.readOnly ? 'Desktop · read-only' : !ready ? 'Not set up' : last ? `Synced ${relativeTime(last)}` : 'Not synced yet';
   if ($('library-sync-summary').textContent !== text) $('library-sync-summary').textContent = text;
   $('library-sync-summary').dataset.state = librarySync ? 'busy' : ready ? 'ready' : 'setup';
   $('library-sync-summary').setAttribute('aria-label', ready ? `Library sync: ${text}. Sync now` : 'Library sync is not set up. Open connection settings');
@@ -1387,7 +1401,7 @@ function renderImports(jobs) {
 $('clear-imports').onclick = () => imports.clearFinished();
 $('imports-details').onclick = () => { importsCollapsed = !importsCollapsed; renderImports(imports.jobs); };
 async function deleteDocument(id) {
-  if (libraryBusy || !libraryReady) return;
+  if (libraryBusy || !libraryReady || store.readOnly) return;
   const doc = snapshot.documents.find(doc => doc.id === id);
   if (!doc) return;
   reader.pause(); deleting = true; deleteStatus = 'Deleting…'; setLibraryBusy(true);
@@ -1401,7 +1415,7 @@ async function deleteDocument(id) {
     }, async () => {
       diagnostics.log('library-delete-recovery', { stage });
       stage = 'free-cache'; deleteStatus = 'Freeing cached space before deleting…'; renderDeleteStatus();
-      return (await pdfPreparationCache.clear()) + (await askUI.speech.recoverDownloads());
+      return freeCachedSpace(store.kv, pdfPreparationCache);
     });
     await pdfPreparationCache.remove(id).catch(error => diagnostics.error('pdf-cache-delete-error', error));
     rememberPosition(); snapshot = result.snapshot; deleteId = null;
@@ -1867,15 +1881,44 @@ async function startVoiceSetup() {
   // quick exit can leave the delayed native checkpoint looking interrupted.
   if (DEBUG) await diagnostics.flushCheckpoint?.();
 }
+async function freeCachedSpace(kv, cache) {
+  let cleared = 0, failure;
+  for (const clean of [() => cache.clear(), () => askUI.speech.recoverDownloads(), () => kv ? freeDocumentCache(kv) : 0]) {
+    try { cleared += await clean(); }
+    catch (error) { failure ||= error; diagnostics.error('cache-cleanup-error', error, { code: error.code, storage: error.storage }); }
+  }
+  if (!cleared && failure) throw failure;
+  return cleared;
+}
+async function freeDocumentCache(kv) {
+  const target = store.onDemand && !store.readOnly ? store : new PhoneLibrary(kv, { lazy: true, onDemand: true });
+  if (target !== store) await target.read();
+  if (target.catalog.documents.some(d => d.body && !d.remote)) {
+    const config = askUI.readConfig();
+    if (connectionMode(config) === 'terminal' && config.endpoint) {
+      try {
+        const client = new EvenTerminal(config, askUI.options()), remote = await desktopLibrary(client);
+        await target.confirmRemote(remote.files, { libraryId: remote.id, endpoint: client.config.endpoint });
+      } catch (error) { diagnostics.error('cache-backup-check-error', error); }
+
+    }
+  }
+  const cleared = await target.clearCachedDocuments();
+  if (store.onDemand) {
+    if (target !== store) { store.catalog = target.catalog; store.refreshSnapshot(); }
+    snapshot = store.snapshot; renderLibrary();
+  }
+  return cleared;
+}
 async function initializeVoiceStorage() {
   if (await waitForSpeechHost()) {
     const bridge = await waitForEvenAppBridge();
     const kv = bridgeStorage(bridge, glasses.lane);
     askUI.speech.setStorage(kv);
-    const cache = new PdfPreparationCache(kv);
+    const cache = new PdfPreparationCache(kv, { maxEntryChars: 16 * 1024 * 1024 });
     // Once the library opens it installs its live cache here. Keep that
     // instance on setup retries so clearing also invalidates in-flight writes.
-    askUI.speech.setup.recoverStorage ||= async () => (await cache.clear()) + (await askUI.speech.recoverDownloads());
+    askUI.speech.setup.recoverStorage ||= () => freeCachedSpace(kv, cache);
     if (DEBUG && !voiceDiagnosticsInstalled) {
       const savedDiagnostics = new AtomicPhoneValue(kv, 'diagnostics');
       diagnostics.restore(await savedDiagnostics.read().catch(() => null));
@@ -1907,12 +1950,28 @@ async function openLibrary() {
       askUI.speech.setStorage(kv);
       const nextPreferences = new PhonePreferences(kv, error => notice(`Could not save your reading position: ${error.message}`, true));
       const savedPreferences = await nextPreferences.read(preferences);
-      const phoneStore = new PhoneLibrary(kv, { lazy: true });
-      snapshot = await phoneStore.read(legacy, text => notice(text));
+      const phoneStore = new PhoneLibrary(kv, { lazy: true, onDemand: true,
+        download: (doc, options) => downloadCatalogDocument(new EvenTerminal(askUI.readConfig(), askUI.options()), doc, options),
+        cacheChanged: () => {
+          if (phoneStore.cacheError) {
+            diagnostics.error('library-cache-save-error', phoneStore.cacheError);
+            if (storageUnavailable(phoneStore.cacheError)) phoneStore.readOnly = true;
+          }
+          if (store === phoneStore) { snapshot = phoneStore.snapshot; renderLibrary(); }
+        } });
+      try { snapshot = await phoneStore.read(legacy, text => notice(text)); }
+      catch (error) {
+        if (!storageUnavailable(error) && !storageWriteRejected(error)) throw error;
+        diagnostics.error('library-storage-error', error); phoneStore.readOnly = true;
+        phoneStore.refreshSnapshot(); snapshot = phoneStore.snapshot;
+      }
+      if (['rejected', 'unavailable'].includes(kv.health.write)) phoneStore.readOnly = true;
       store = phoneStore; preferences = savedPreferences;
       migrateTerminalPreferences(preferences, privateTerminalConfig()); askUI.load();
-      pdfPreparationCache = new PdfPreparationCache(kv);
-      askUI.speech.setup.recoverStorage = async () => (await pdfPreparationCache.clear()) + (await askUI.speech.recoverDownloads());
+      pdfPreparationCache = new PdfPreparationCache({ get: key => kv.get(key), set: (key, value) => {
+        phoneStore.requireWritable(); return kv.set(key, value);
+      } }, { maxEntryChars: 16 * 1024 * 1024 });
+      askUI.speech.setup.recoverStorage = () => freeCachedSpace(kv, pdfPreparationCache);
       preferences.positions ||= {}; preferences.bookmarks ||= {};
       delete preferences.pageOverlap; delete preferences.askContextTokens;
       preferences.pdfEntryLines = pdfEntryLines(preferences.pdfEntryLines);
@@ -1926,7 +1985,7 @@ async function openLibrary() {
       delete preferences.preloadText; delete preferences.speed;
       applyAppTextSize();
       phonePreferences = nextPreferences;
-      readingLog = new ReadingLog(phoneReadingStorage(kv), readingLogChanged);
+      readingLog = new ReadingLog(phoneReadingStorage(kv, { writable: () => !store.readOnly }), readingLogChanged);
       if (DEBUG && !voiceDiagnosticsInstalled) {
         const savedDiagnostics = new AtomicPhoneValue(kv, 'diagnostics');
         diagnostics.restore(await savedDiagnostics.read().catch(() => null));
@@ -1936,7 +1995,7 @@ async function openLibrary() {
     } else { snapshot = await browserStore.read(); readingLog = new ReadingLog(browserReadingStorage(browserStore), readingLogChanged); }
     try { await readingLog.load(); } catch (error) { readingSaveError(error); }
     $('reading-history-open').disabled = false;
-    await pdfPreparationCache.retain(snapshot.documents.map(doc => doc.id)).catch(error => diagnostics.error('pdf-cache-cleanup-error', error));
+    if (!store.readOnly) await pdfPreparationCache.retain(snapshot.documents.map(doc => doc.id)).catch(error => diagnostics.error('pdf-cache-cleanup-error', error));
     libraryReady = true; $('import').disabled = false; notice('');
     if (WEB) await sharedReader.sync(); else void sharedReader.sync();
     const selected = snapshot.documents.some(doc => doc.id === preferences.selected?.id) ? preferences.selected.id : null;
@@ -1944,8 +2003,8 @@ async function openLibrary() {
     setLibraryOpen(!active, false);
     void refreshReadingCounts();
     await phonePreferences?.flush();
-    if (WEB) void startLibrarySync();
-  })().catch(error => { notice(`Could not open the saved library: ${error.message}`, true); renderLibrary(); renderControls(); setLibraryOpen(true, false); })
+    if (WEB || store.onDemand && connectionMode(askUI.readConfig()) === 'terminal' && askUI.readConfig().endpoint) void startLibrarySync();
+  })().catch(error => { diagnostics.error('library-open-error', error, { code: error.code, storage: error.storage }); notice(`Could not open the saved library: ${error.message}`, true); renderLibrary(); renderControls(); setLibraryOpen(true, false); })
     .finally(() => { openingLibrary = null; });
   return openingLibrary;
 }

@@ -1,4 +1,4 @@
-import { AtomicPhoneValue } from './phone-storage.js';
+import { AtomicPhoneValue, storageUnavailable, storageWriteRejected } from './phone-storage.js';
 import { mergeReadingEntries } from './reading-activity.js';
 
 // Separate from library/preferences: removing an original never removes events.
@@ -26,7 +26,7 @@ export function browserReadingStorage(library) {
   };
 }
 
-export function phoneReadingStorage(kv) {
+export function phoneReadingStorage(kv, { writable = () => true } = {}) {
   const index = new AtomicPhoneValue(kv, 'reading-days');
   const buckets = new Map(), values = new Map(), locations = new Map(); let catalog;
   const bucket = key => { if (!buckets.has(key)) buckets.set(key, new AtomicPhoneValue(kv, `reading-shard:${key}`)); return buckets.get(key); };
@@ -44,6 +44,7 @@ export function phoneReadingStorage(kv) {
       await load(); return [...values.values()].flat();
     },
     async merge(entries) {
+      if (!writable()) throw Object.assign(Error('Even storage is unavailable. Keep this page open until history syncs to the desktop.'), { code: 'phone-storage-unavailable' });
       await load();
       const next = structuredClone(catalog), changed = new Map(), locating = new Map(locations);
       for (const entry of entries) {
@@ -103,12 +104,14 @@ export class ReadingSync {
         // the acknowledged revision so we never mark unseen events as synced.
         const confirmed = upload.length ? await client.api(`pageborne/reading-activity/${day}`, { timeoutMs: 10000, query: { observations: 2 } }) : result;
         if (confirmed.revision) revision = confirmed.revision;
-        await log.add(mergeReadingEntries(merged, confirmed.entries));
+        try { await log.add(mergeReadingEntries(merged, confirmed.entries)); }
+        catch (error) { if (!storageUnavailable(error) && !storageWriteRejected(error)) throw error; }
+
         this.synced.set(key, { local: JSON.stringify(log.entries.filter(e => e.scope === scope && e.day === day).map(e => ({ ...e, sessions: this.sessions(e) }))), remote: revision });
       }
-      this.status = 'Synced with desktop';
+      this.status = log.pending?.size ? 'Synced with desktop · device save unavailable' : 'Synced with desktop';
     } catch (error) {
-      this.status = error.status === 404 ? 'Saved on this device · desktop extension needs updating' : 'Saved on this device · sync will retry';
+      this.status = this.log()?.pending?.size ? 'Not saved on this device · keep open until desktop sync succeeds' : error.status === 404 ? 'Saved on this device · desktop extension needs updating' : 'Saved on this device · sync will retry';
     }
     this.changed();
   }
