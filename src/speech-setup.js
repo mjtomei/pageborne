@@ -1,4 +1,5 @@
 import { safeTimeout as setTimeout, cancelTimeout } from './timers.js';
+import { storageWriteRejected } from './phone-storage.js';
 
 const megabytes = bytes => `${((bytes || 0) / 1e6).toFixed(1)} MB`;
 export function modelFileStatus(entry, store) {
@@ -72,7 +73,8 @@ export class SpeechSetup {
   }
   async attempt(retry) {
     if (this.busy) return;
-    this.busy = true; this.error = ''; this.recoveryStatus = ''; this.render();
+    this.busy = true; this.error = ''; this.storageFailure = false; this.recoveryStatus = ''; this.render();
+    this.dialog.querySelector('#speech-setup-details').open = true;
     // Restore a small receipt before deciding whether a setup modal is needed.
     await new Promise(resolve => setTimeout(resolve, 25));
     try {
@@ -84,7 +86,26 @@ export class SpeechSetup {
       // Prepare Moonshine's larger runtime before retaining the other models.
       // Keep the display order stable and still require every real voice check.
       const preparation = Object.values(this.models.entries).sort((a, b) => Number(b.model.id === 'moonshine') - Number(a.model.id === 'moonshine'));
-      for (const entry of preparation) if (!entry.verified || retry) await this.models.prepare(entry.model.id, { retry });
+      let recoveredStorage = false;
+      for (const entry of preparation) if (!entry.verified || retry) {
+        try { await this.models.prepare(entry.model.id, { retry }); }
+        catch (error) {
+          // A definite rejection is safe to retry after reclaiming disposable
+          // data. Never retry an uncertain native timeout or an inference error,
+          // and never loop when cleanup cannot provide enough space.
+          if (recoveredStorage || !storageWriteRejected(error) || !this.recoverStorage) throw error;
+          recoveredStorage = true;
+          this.recoveryStatus = 'Freeing cached space for voice setup…'; this.render();
+          const cleared = await this.recoverStorage();
+          if (!cleared) throw error;
+          this.recoveryStatus = `Cleared ${megabytes(cleared)} of cached data. Retrying voice setup…`; this.render();
+          // This attempt failed on a confirmed storage write in this process.
+          // Its preparation marker may remain after the worker passed; allow
+          // this model to retry without bypassing prior-run interruption guards.
+          await this.models.prepare(entry.model.id, { retry: true });
+          this.recoveryStatus = '';
+        }
+      }
       if (!Object.values(this.models.entries).every(entry => entry.verified)) throw Error('All three voice checks must pass before continuing.');
       this.render();
       if (this.dialog.open) await new Promise(resolve => setTimeout(resolve, 350));
@@ -95,8 +116,12 @@ export class SpeechSetup {
       this.blocked = false; cancelTimeout(this.timer); this.dialog.close(); this.resolve(); this.pending = null;
     } catch (error) {
       this.storageFailure = error.code === 'phone-storage-write' || error.name === 'QuotaExceededError' || /(?:phone|app) storage|quota/i.test(error.message);
+      this.recoveryStatus = '';
       this.error = error.message || 'Voice setup could not finish. Retry when connected.';
       if (!this.dialog.open) this.dialog.showModal();
+      this.dialog.querySelector('#speech-setup-details').open = false;
+      this.dialog.scrollTop = 0;
+      this.dialog.querySelector('h2').focus();
     } finally { this.busy = false; this.render(); }
   }
   async freeSpace() {
@@ -136,11 +161,12 @@ export class SpeechSetup {
       else setup.bar.value = entry.verified || stage === 'ready' ? 1 : stage === 'loading' ? Math.min(1, entry.setup.loadedBytes / Math.max(1, entry.setup.totalBytes)) : 0;
     }
     const ready = entries.every(entry => entry.verified);
+    this.dialog.querySelector('h2').textContent = this.error ? 'Voice setup needs attention' : 'Preparing voice';
     this.dialog.querySelector('#speech-setup-help').textContent = modelDownloadSummary(this.models.store, ready)
       + ' Successful checks are saved on this device. Checks repeat if the models, device or speech runtime change; models load when you speak.';
     const status = this.dialog.querySelector('[role=status]');
     const text = this.recoveryStatus || (this.storageFailure && this.error
-      ? 'Even could not save Pageborne data. Its app storage may be full or unavailable. Free cached space, then retry, or continue without voice.'
+      ? 'Even could not save voice setup data. This does not mean your phone is full. You can continue reading without voice, or retry setup.'
       : this.error) || (ready ? 'All three models passed. Opening Pageborne…' : 'Keep Pageborne open while voice is prepared.');
     if (status.textContent !== text) status.textContent = text;
     const retry = this.dialog.querySelector('#speech-setup-retry'); retry.hidden = !this.error; retry.disabled = this.busy;

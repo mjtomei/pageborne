@@ -126,6 +126,7 @@ export class SpeechUI {
     return label;
   }
   failure(error, backend = this.backend, model = 'Speech ensemble') {
-    if (error.name !== 'AbortError') this.diagnostics?.error('local-speech-error', error, { backend, model });
+    if (error.name !== 'AbortError') this.diagnostics?.error('local-speech-error', error, { backend, model,
+      ...(error.code === 'phone-storage-write' ? { failure: error.code, storage: error.storage } : {}) });
   }
 }

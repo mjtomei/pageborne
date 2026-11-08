@@ -15,8 +15,8 @@ const fixtures = ['conformer', 'zipformer', 'moonshine'].map((id, i) => {
 const servers = [], reports = [];
 async function server() {
   const vite = await createServer({ cacheDir: '.state/vite-speech-startup', clearScreen: false,
-    optimizeDeps: { exclude: ['@pageborne/browser-stt'] },
-    server: { host: '127.0.0.1', port: 0, watch: { usePolling: true } },
+    optimizeDeps: { entries: ['index.html'], exclude: ['@pageborne/browser-stt'] },
+    server: { host: '127.0.0.1', port: 0, watch: null, hmr: false },
     plugins: [displayProbe(), { name: 'small-setup-fixture', enforce: 'pre',
       transformIndexHtml: html => html.replace('<head>', '<head><meta name="pageborne-host" content="even">'),
       transform(code, id) { if (id.split('?')[0].endsWith('/ensemble-speech.js')) return code.replace(/import manifests from [^;]+;/, `const manifests = ${JSON.stringify(fixtures.map(f => f.model))};`); },
@@ -26,7 +26,8 @@ async function server() {
 try {
   const origins = [await server(), await server()];
   for (const engine of [chromium, webkit]) {
-    const browser = await engine.launch({ headless: true, executablePath: engine === chromium ? '/usr/bin/google-chrome' : process.env.WEBKIT_PATH });
+    const browser = await engine.launch({ headless: true, executablePath: engine === chromium ? '/usr/bin/google-chrome' : process.env.WEBKIT_PATH,
+      ...(engine === chromium ? { args: ['--disable-gpu'] } : {}) });
     const storage = new Map(), report = { engine: engine.name(), passed: false, downloads: 0, errors: [] }; reports.push(report);
     const kv = { get: async key => storage.get(key) || '', set: async (key, value) => storage.set(key, value) };
     const savedReading = { updatedAt: 100, positions: { 'local\nkept.md': { percent: 42, sourceLine: 17 } },

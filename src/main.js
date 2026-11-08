@@ -1873,7 +1873,9 @@ async function initializeVoiceStorage() {
     const kv = bridgeStorage(bridge, glasses.lane);
     askUI.speech.setStorage(kv);
     const cache = new PdfPreparationCache(kv);
-    askUI.speech.setup.recoverStorage = async () => (await cache.clear()) + (await askUI.speech.recoverDownloads());
+    // Once the library opens it installs its live cache here. Keep that
+    // instance on setup retries so clearing also invalidates in-flight writes.
+    askUI.speech.setup.recoverStorage ||= async () => (await cache.clear()) + (await askUI.speech.recoverDownloads());
     if (DEBUG && !voiceDiagnosticsInstalled) {
       const savedDiagnostics = new AtomicPhoneValue(kv, 'diagnostics');
       diagnostics.restore(await savedDiagnostics.read().catch(() => null));
