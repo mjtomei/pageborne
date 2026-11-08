@@ -1,11 +1,15 @@
 import TextWorker from './text-worker.js?worker&inline';
 
 // Long books must not block touch input, cancellation, or bridge timeouts.
-export function prepareTextInBackground(content, signal, progress = () => {}) {
+export function prepareTextInBackground(content, signal, progress = () => {}, { timeout = 60000 } = {}) {
   return new Promise((resolve, reject) => {
     signal?.throwIfAborted();
     const worker = new TextWorker();
+    let settled = false;
+    const timer = setTimeout(() => finish(new Error('Text preparation took too long. Choose another document or reopen this one to retry.')), timeout);
     const finish = (error, result) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
       signal?.removeEventListener('abort', abort); worker.terminate();
       if (error) reject(error); else resolve(result);
     };

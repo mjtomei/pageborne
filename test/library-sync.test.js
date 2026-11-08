@@ -28,9 +28,29 @@ import { nativeLayout } from '../src/native-text.js';
 import { parseDocument } from '../src/document.js';
 import { EvenTerminal } from '../src/ask-terminal.js';
 import { orderedDocuments } from '../src/library-order.js';
+import { Lexer } from 'marked';
+import { downloadLibraryFile } from '../src/library-sync.js';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const document = (name, content) => readLocalFile(new File([content], name));
+test('verified downloads use desktop counts without parsing the book on the UI thread', async t => {
+  t.mock.method(Lexer, 'lex', () => { throw Error('Do not parse downloaded books before background preparation'); });
+  const content = '\uFEFF# A book\r\n\r\n' + 'A readable paragraph.\n\n'.repeat(8000), bytes = Buffer.from(content);
+  const file = { name: 'book.md', bytes: bytes.length, sha256: hash(bytes), readingWords: 24002 };
+  const client = { async api(_, { body: { offset } }) {
+    return { ...file, offset, data: bytes.subarray(offset, offset + 768 * 1024).toString('base64') };
+  } };
+  const downloaded = await downloadLibraryFile(client, file);
+  assert.equal(downloaded.content, content); assert.equal(downloaded.readingWords, file.readingWords);
+  assert.equal(downloaded.title, 'A book');
+  const unknown = await downloadLibraryFile(client, { ...file, readingWords: undefined });
+  assert.equal(unknown.readingWords, undefined, 'the reader can calculate missing counts in the background');
+  await assert.rejects(downloadLibraryFile(client, { ...file, sha256: '0'.repeat(64) }), /Invalid document download|checksum mismatch/);
+  const controller = new AbortController();
+  await assert.rejects(downloadLibraryFile(client, file, controller.signal, stage => {
+    if (stage.includes('Verifying')) controller.abort();
+  }), { name: 'AbortError' });
+});
 async function fixture(t, lazy = false) {
   const libraryDir = await mkdtemp(path.join(tmpdir(), 'pageborne-library-'));
   t.after(() => rm(libraryDir, { recursive: true, force: true }));

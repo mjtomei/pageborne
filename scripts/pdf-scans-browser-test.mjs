@@ -7,11 +7,11 @@ import { createServer } from 'vite';
 import { scannedPdfFixture } from '../test/fixtures/pdfs.mjs';
 
 const out = process.env.PDF_SCANS_RESULTS || 'test-results/pdf-scans'; await mkdir(out, { recursive: true });
-const server = await createServer({ server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, clearScreen: false });
+const server = await createServer({ optimizeDeps: { entries: ['index.html'] }, server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, clearScreen: false });
 await server.listen();
 const engine = process.env.PDF_BROWSER || 'chromium';
 const browser = await (engine === 'webkit' ? webkit.launch({ executablePath: process.env.WEBKIT_PATH })
-  : chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', args: ['--no-sandbox'] }));
+  : chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', args: ['--no-sandbox', '--disable-gpu'] }));
 const result = { engine, passed: false, errors: [], cases: [] };
 try {
   const page = await browser.newPage(); page.on('pageerror', error => result.errors.push(error.message));

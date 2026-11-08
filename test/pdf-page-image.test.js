@@ -49,6 +49,33 @@ test('covers and sparse title pages stay whole, fit one glasses pane and appear 
   }
 });
 
+test('good scanned prose survives a signature, diagram, stray folio or failed running head', () => {
+  const page = scan(), prose = 'The nature of war requires understanding and judgment. '.repeat(8);
+  const body = { kind: 'text', text: prose, reflow: { text: prose }, lines: [] };
+  for (const crop of [
+    { kind: 'figure', text: 'General, Commandant of the Marine Corps', lines: [] },
+    { kind: 'figure', text: 'OPERATIONAL', lines: [] },
+    { kind: 'scan', text: '', lines: [] },
+    { kind: 'text', text: 'MCDP 1 Notes', lines: [] },
+  ]) {
+    const input = { blocks: [body, crop], marginMasks: [] };
+    assert.equal(pdfScanPageFallback(input, page), input);
+    assert.equal(input.blocks[1], crop, 'unresolved source content is retained exactly');
+  }
+  const uncertain = { blocks: [body, { kind: 'text', text: 'Uncertain text. '.repeat(100) }] };
+  assert.equal(pdfScanPageFallback(uncertain, page).blocks[0].fullPage, true);
+});
+
+test('a dense dash-separated chapter outline reaches analysis without changing sparse cover handling', () => {
+  const page = scan();
+  page.text = Array.from({ length: 4 }, (_, n) => ({ x: 50, y: 100 + n * 30, width: 500, height: 20, confidence: 94,
+    text: 'The Challenge—Maneuver Warfare—Orienting—Command—Decisionmaking—Mission Tactics' }));
+  assert.equal(pdfWholePageImage({ ...page, reflow: true }), null);
+  assert.equal(pdfWholePageImage(page).blocks[0].fullPage, true);
+  page.text = page.text.slice(0, 2);
+  assert.equal(pdfWholePageImage({ ...page, reflow: true }).blocks[0].fullPage, true);
+});
+
 test('scanned paragraphs retain reflow and blank pages do not acquire an image', () => {
   const page = scan();
   page.text = Array.from({ length: 12 }, (_, n) => ({ x: 50, y: 100 + n * 20, width: 500, height: 15,

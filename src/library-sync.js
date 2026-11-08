@@ -62,10 +62,13 @@ export async function downloadLibraryFile(client, file, signal, progress = () =>
     if (chunk.offset !== offset || chunk.sha256 !== file.sha256 || chunk.bytes !== file.bytes || !data.length || data.length > CHUNK_BYTES || offset + data.length > file.bytes) throw new Error('Invalid document download. Sync again.');
     bytes.set(data, offset); offset += data.length;
   }
-  progress(`Received ${file.name} · 100%. Checking document…`);
+  signal?.throwIfAborted();
+  progress(`Received ${file.name} · 100%. Verifying download…`);
   if (await digest(bytes) !== file.sha256) throw new Error('Document checksum mismatch. Sync again.');
-  return { ...await readLocalFile(new File([bytes], file.name)),
-    ...(/\.pdf$/i.test(file.name) && validWordCount(file.readingWords) ? { readingWords: file.readingWords } : {}),
+  signal?.throwIfAborted();
+  progress('Opening received document…');
+  return { ...await readLocalFile(new File([bytes], file.name), () => {}, { deferReadingWords: true, signal }),
+    ...(validWordCount(file.readingWords) ? { readingWords: file.readingWords } : {}),
     ...(libraryTimestamp(file.addedAt) ? { addedAt: file.addedAt } : {}),
     ...(libraryTimestamp(file.modifiedAt) ? { modifiedAt: file.modifiedAt } : {}) };
 }

@@ -2,7 +2,7 @@
 import { chromium, webkit, expect } from '@playwright/test';
 import { createServer } from 'vite';
 import { createHash } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { showLibrary } from './ui-helpers.mjs';
 
@@ -22,7 +22,8 @@ const report = [];
 try {
   for (const mode of ['ok', 'false', 'null', 'large']) {
     const healthy = ['ok','large'].includes(mode);
-    const content = '# Desktop book\n\n' + 'This passage downloads only when opened. '.repeat(mode === 'large' ? 32000 : 30), bytes = Buffer.from(content);
+    const content = mode === 'large' && process.env.LIBRARY_BOOK_PATH ? await readFile(process.env.LIBRARY_BOOK_PATH, 'utf8')
+      : '# Desktop book\n\n' + 'This passage downloads only when opened. '.repeat(mode === 'large' ? 32000 : 30), bytes = Buffer.from(content);
     const file = { name: 'book.md', title: 'Desktop book', bytes: bytes.length, words: 180, sha256: createHash('sha256').update(bytes).digest('hex') };
     const values = new Map(), errors = [], requests = []; let writes = 0, offline = false;
     const context = await browser.newContext({ viewport: { width: 440, height: 806 }, isMobile: true, hasTouch: true });
@@ -54,6 +55,10 @@ try {
       } };
     }, { endpoint, mode });
     const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
+    if (mode === 'large' && process.env.LIBRARY_CPU_RATE && process.env.LIBRARY_BROWSER !== 'webkit') {
+      const cdp = await context.newCDPSession(page);
+      await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.LIBRARY_CPU_RATE) });
+    }
     await page.goto(server.resolvedUrls.local[0]);
     const row = page.locator('[data-document-id="book.md"]'); await expect(row).toBeVisible({ timeout: 20000 });
     await expect(page.locator('#library-sync')).toBeEnabled();
@@ -65,7 +70,7 @@ try {
       assert(writes <= 2, 'unavailable diagnostics must stop native save retries');
     }
     await row.locator('.document-card').tap(); await expect(page.locator('#bookmark')).toBeEnabled({ timeout: 30000 });
-    await expect(page.locator('#title')).toHaveText('Desktop book');
+    await expect(page.locator('#title')).not.toHaveText('Choose something good.');
     await expect(page.locator('#notice-text')).not.toContainText('Could not open');
     assert(requests.some(r => r.path.endsWith('/library/read')));
     if (mode === 'large') {
@@ -88,5 +93,24 @@ try {
     report.push({ mode, passed: true, writes, catalogOnlySync: true, opened: true, offlineRestart: mode === 'ok' });
     await context.close();
   }
+  // A worker that never responds must release its resources on deadline or
+  // cancellation. No inference, native storage, or long wall-clock wait.
+  const page = await browser.newPage();
+  await page.goto(server.resolvedUrls.local[0]);
+  const recovery = await page.evaluate(async () => {
+    const { prepareTextInBackground } = await import('/src/text-reader.js');
+    const Original = window.Worker; let terminated = 0;
+    window.Worker = class { postMessage() {} terminate() { terminated++; } };
+    try {
+      let timeout = '', cancelled = '';
+      try { await prepareTextInBackground('book', undefined, () => {}, { timeout: 20 }); } catch (e) { timeout = e.message; }
+      const controller = new AbortController();
+      const pending = prepareTextInBackground('book', controller.signal); controller.abort();
+      try { await pending; } catch (e) { cancelled = e.name; }
+      return { timeout, cancelled, terminated };
+    } finally { window.Worker = Original; }
+  });
+  assert.match(recovery.timeout, /too long/); assert.equal(recovery.cancelled, 'AbortError'); assert.equal(recovery.terminated, 2);
+  report.push({ workerRecovery: recovery }); await page.close();
 } finally { await writeFile(`${out}/results.json`, JSON.stringify(report, null, 2)); await browser.close(); await server.close(); }
 console.log(JSON.stringify(report));

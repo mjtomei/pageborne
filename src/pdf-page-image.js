@@ -62,6 +62,11 @@ export function pdfWholePageImage({ width, height, data, images, text, blank = f
   }
   const prose = pdfTextRows(text).filter(row => row.text.length >= 35 && row.text.trim().split(/\s+/).length >= 5);
   if (prose.length >= 5 && prose.reduce((sum, row) => sum + row.text.length, 0) >= 240) return null;
+  // Compact chapter outlines can join several words with dashes, so their
+  // whitespace word count understates the amount of readable text. Admit
+  // these to pixel/layout checks without forcing any region into reflow.
+  const denseRows = pdfTextRows(text).filter(row => row.text.length >= 35 && row.items.every(item => item.confidence >= 80));
+  if (reflow && denseRows.length >= 4 && denseRows.reduce((sum, row) => sum + row.text.length, 0) >= 160) return null;
   // A paragraph continued onto an otherwise empty leaf is not a title page.
   // This only admits it to analysis: unexplained pixels still trigger the
   // whole-page fallback after reflow, protecting illustrations and plates.
@@ -104,14 +109,17 @@ export function removePdfScanBorderFragments({ blocks, width, height, data, orig
   });
 }
 
-// Unresolved scanned content stays in its full source page. Mixing readable
-// paragraphs with cropped OCR failures makes an underline look like artwork
-// and loses the context needed to inspect a genuinely illegible passage.
-// Native PDF figures are unaffected; separate handwriting annotations stay.
+// Keep mostly illegible scans together for context. Once most recognized text
+// has passed the reflow checks, preserve that prose AND every unresolved crop:
+// a signature, folio, rule or diagram must not turn the whole page into an image.
+// This never upgrades uncertain recognition or discards unexplained pixels.
 export function pdfScanPageFallback(analysis, { width, height, images }) {
   if (!images.some(image => image.kind !== 'drawing' && image.width * image.height >= width * height * .85)
     || analysis.blocks.some(block => block.fullPage)
     || !analysis.blocks.some(block => !block.reflow)) return analysis;
+  const readable = analysis.blocks.reduce((sum, block) => sum + (block.reflow?.text?.length || 0), 0);
+  const recognized = analysis.blocks.reduce((sum, block) => sum + (block.text?.length || 0), 0);
+  if (readable >= 160 && readable >= recognized * .5) return analysis;
   const bounds = { x: 0, y: 0, width, height };
   return { ...analysis, bounds, columns: false, marginMasks: [],
     blocks: [{ ...bounds, kind: 'figure', fullPage: true, lines: [], text: '' }] };

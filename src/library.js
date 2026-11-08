@@ -34,7 +34,8 @@ export function localSnapshot(saved) {
   })) };
 }
 
-export async function readLocalFile(file, onProgress = () => {}) {
+export async function readLocalFile(file, onProgress = () => {}, { deferReadingWords = false, signal } = {}) {
+  signal?.throwIfAborted();
   if (!/\.(md|markdown|txt|pdf)$/i.test(file.name)) throw new Error('Choose a Markdown, PDF or plain-text file.');
   if (/[\x00-\x1f\x7f/\\]/.test(file.name) || encoder.encode(file.name).length > 220) throw new Error('Choose a file with a shorter, valid filename.');
   const pdf = /\.pdf$/i.test(file.name); const limit = pdf ? MAX_PDF_BYTES : MAX_FILE_BYTES;
@@ -45,7 +46,9 @@ export async function readLocalFile(file, onProgress = () => {}) {
   const parts = []; let loaded = 0;
   onProgress({ phase: 'reading', loaded, total: file.size });
   for (let offset = 0; offset < file.size; offset += 128 * 1024) {
+    signal?.throwIfAborted();
     const bytes = await file.slice(offset, offset + 128 * 1024).arrayBuffer();
+    signal?.throwIfAborted();
     loaded += bytes.byteLength;
     if (loaded > limit) throw new Error(`File exceeds ${pdf ? 16 : 4} MiB.`);
     try { parts.push(pdf ? new Uint8Array(bytes) : decoder.decode(bytes, { stream: true })); }
@@ -65,8 +68,11 @@ export async function readLocalFile(file, onProgress = () => {}) {
   const content = parts.join('');
   if (content.includes('\0')) throw new Error('File contains binary data.');
   const title = (!/\.txt$/i.test(file.name) && content.replace(/^\uFEFF/, '').match(/^#{1,6}\s+(.+?)\s*#*\s*$/m)?.[1]) || file.name.replace(/\.[^.]+$/, '');
+  // Desktop downloads already carry counts for these exact bytes. Do not parse
+  // a whole book on the UI thread merely to recount it before the reader's
+  // cancellable background preparation. Missing counts are filled by the reader.
   return { id: file.name, title, content, bytes: loaded, words: countWords(content),
-    readingWords: parseDocument(content).blocks.reduce((sum, block) => sum + readingWords(block.text), 0) };
+    ...(!deferReadingWords ? { readingWords: parseDocument(content).blocks.reduce((sum, block) => sum + readingWords(block.text), 0) } : {}) };
 }
 
 export function addDocument(saved, document) {
