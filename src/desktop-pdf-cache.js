@@ -19,9 +19,11 @@ export function desktopPdfCache(local, client, name, current = () => true) {
         });
         if (!current()) return saved;
         if (result.state === 'ready' && result.key === key && /^[a-f0-9]{64}$/.test(result.engine)) {
-          if (result.unchanged && saved?.desktopEngine === result.engine) return saved;
           if (!Number.isSafeInteger(result.bytes) || result.bytes <= 0
             || !/^[a-f0-9]{64}$/.test(result.sha256)) return saved;
+          // A checkpoint repair can change layout without changing the OCR
+          // engine. Compare the artifact itself before reusing the phone copy.
+          if (result.unchanged && saved?.desktopEngine === result.engine && saved.desktopSha256 === result.sha256) return saved;
           const bytes = new Uint8Array(result.bytes);
           for (let offset = 0; offset < bytes.length;) {
             if (!current()) return saved;
@@ -41,6 +43,7 @@ export function desktopPdfCache(local, client, name, current = () => true) {
           const artifact = downloaded.saved;
           validatePdfPreparation(artifact);
           artifact.desktopEngine = result.engine;
+          artifact.desktopSha256 = result.sha256;
           try { await local.write(key, artifact, current); } catch { /* Still usable if phone storage is full. */ }
           return artifact;
         }

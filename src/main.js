@@ -32,6 +32,7 @@ import { PhoneLibrary, PhonePreferences, AtomicPhoneValue, bridgeStorage, retryA
 import { waitForSpeechHost } from './speech-storage.js';
 import { PdfPreparationCache, browserPdfStorage } from './pdf-cache.js';
 import { readFileInBackground } from './file-reader.js';
+import { prepareTextInBackground } from './text-reader.js';
 import { ImportQueue, importFinished } from './import-queue.js';
 import { nativeLayout, pageTurnY, measureNativeText } from './native-text.js';
 import { Diagnostics, VERSION } from './diagnostics.js';
@@ -114,7 +115,8 @@ function savePreferences() {
   // defaults: a newer timestamp would make them replace the saved phone state.
   if (!libraryReady) return;
   preferences.updatedAt = Math.max(Date.now(), (Number(preferences.updatedAt) || 0) + 1);
-  if (!store.readOnly) phonePreferences?.schedule(preferences);
+  if (store.readOnly) phonePreferences?.suspend();
+  phonePreferences?.schedule(preferences);
   try { localStorage.setItem(localKey, JSON.stringify(preferences)); }
   catch { if (!phonePreferences) notice('Phone storage is full or unavailable. Keep this page open to retain your place.', true); }
 }
@@ -803,7 +805,7 @@ async function selectDocument(id, save = true) {
       try {
         const document = await trackPdfPreparation(async () => {
           controller.signal.throwIfAborted();
-          return store.loadDocument(selected, { signal: controller.signal, progress: text => { if (version === selectionVersion) notice(text); } });
+          return store.loadDocument(selected, { signal: controller.signal, backgroundCache: true, progress: text => { if (version === selectionVersion) notice(text); } });
         });
         if (version !== selectionVersion) return;
         active = document; if (store.onDemand) snapshot = store.snapshot; pdfOpenMessage = null; notice('');
@@ -908,11 +910,27 @@ async function selectDocument(id, save = true) {
         }
       }));
     } else {
-      buildLayout();
+      let entries;
+      if (active.content.length > 100000) {
+        const controller = new AbortController(); documentLoadController = controller;
+        reader.setDocument(0); pdfOpenMessage = { body: 'Preparing text…', status: 'Loading', kind: 'loading' };
+        notice('Preparing text…'); dirty = true;
+        try {
+          const prepared = await trackPdfPreparation(() => prepareTextInBackground(active.content, controller.signal, stage => {
+            if (version === selectionVersion) { notice(stage); pdfOpenMessage.body = stage; dirty = true; }
+          }));
+          if (version !== selectionVersion) return;
+          layout = prepared.layout; entries = prepared.entries; pdfOpenMessage = null; notice('');
+        } catch (error) {
+          if (version !== selectionVersion || controller.signal.aborted) return;
+          diagnostics.error('text-open-error', error); notice(`Could not prepare text: ${error.message}`, true);
+          pdfOpenMessage = { body: 'Could not prepare text. Reopen the document to retry.', status: 'File error', kind: 'error' }; dirty = true; return;
+        } finally { if (documentLoadController === controller) documentLoadController = null; }
+      } else buildLayout();
       void cacheReadingWords(active, layout.blocks.reduce((sum, block) => sum + readingWords(block.text), 0));
       reader.setDocument(layout.maxY, restorePosition(preferences.positions[documentKey()]), layout.pages,
         (y, direction) => pageTurnY(layout, y, direction));
-      reader.setSpeedDocument(layout, preferences.positions[documentKey()]?.speedCursor);
+      reader.setSpeedDocument(layout, preferences.positions[documentKey()]?.speedCursor, entries);
     }
   } else {
     delete preferences.selected;
@@ -994,7 +1012,7 @@ function renderControls() {
   const micAvailable = !!navigator.mediaDevices?.getUserMedia && !!globalThis.AudioWorkletNode;
   $('preview-speak').hidden = !micAvailable;
   $('preview-speak').disabled = !libraryReady || (!active && !askUI.session.active) || pdfPreparations.size > 0 || !!askUI.speech.setup.blocked;
-  $('preview-speak').textContent = pdfPreparations.size ? 'PDF loading' : ['starting', 'listening'].includes(askUI.session.status) ? 'Release to review' : 'Hold to talk';
+  $('preview-speak').textContent = pdfPreparations.size ? 'Document loading' : ['starting', 'listening'].includes(askUI.session.status) ? 'Release to review' : 'Hold to talk';
 
   const pdf = active?.format === 'pdf';
   const speedMode = reader.mode === 'speed';
@@ -1888,6 +1906,10 @@ async function freeCachedSpace(kv, cache) {
     catch (error) { failure ||= error; diagnostics.error('cache-cleanup-error', error, { code: error.code, storage: error.storage }); }
   }
   if (!cleared && failure) throw failure;
+  if (cleared && store.onDemand && !store.uncertain) {
+    store.readOnly = false; store.cacheError = null;
+    await phonePreferences?.resume(); renderLibrary();
+  }
   return cleared;
 }
 async function freeDocumentCache(kv) {
@@ -1905,7 +1927,7 @@ async function freeDocumentCache(kv) {
   }
   const cleared = await target.clearCachedDocuments();
   if (store.onDemand) {
-    if (target !== store) { store.catalog = target.catalog; store.refreshSnapshot(); }
+    if (target !== store) { store.catalog = target.catalog; store.index = target.index; store.uncertain = false; store.refreshSnapshot(); }
     snapshot = store.snapshot; renderLibrary();
   }
   return cleared;
@@ -1948,14 +1970,18 @@ async function openLibrary() {
       const bridge = await waitForEvenAppBridge();
       const kv = bridgeStorage(bridge, glasses.lane);
       askUI.speech.setStorage(kv);
-      const nextPreferences = new PhonePreferences(kv, error => notice(`Could not save your reading position: ${error.message}`, true));
+      const nextPreferences = new PhonePreferences(kv, error => {
+        diagnostics.error('position-save-error', error, { code: error.code, storage: error.storage });
+        if (store.onDemand && (storageUnavailable(error) || storageWriteRejected(error))) { store.readOnly = true; renderLibrary(); }
+        notice(`Your place is kept in this session, but Even storage could not save it. Keep the reader open. ${error.message}`, true);
+      }, 500, { recover: () => freeDocumentCache(kv) });
       const savedPreferences = await nextPreferences.read(preferences);
       const phoneStore = new PhoneLibrary(kv, { lazy: true, onDemand: true,
         download: (doc, options) => downloadCatalogDocument(new EvenTerminal(askUI.readConfig(), askUI.options()), doc, options),
         cacheChanged: () => {
           if (phoneStore.cacheError) {
             diagnostics.error('library-cache-save-error', phoneStore.cacheError);
-            if (storageUnavailable(phoneStore.cacheError)) phoneStore.readOnly = true;
+            if (storageUnavailable(phoneStore.cacheError)) { phoneStore.readOnly = true; nextPreferences.suspend(); }
           }
           if (store === phoneStore) { snapshot = phoneStore.snapshot; renderLibrary(); }
         } });

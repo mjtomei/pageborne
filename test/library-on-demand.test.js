@@ -55,6 +55,16 @@ test('catalog sync downloads no originals, open verifies bytes, cached copy surv
   assert.equal((await f.open('book.md')).content, '# The title\n\nA short book.');
 });
 
+test('opening downloaded text does not wait for its optional native cache write', async t => {
+  const f = await fixture(t); await f.add('book.md', '# Ready\n\nThe network has already delivered the text.'); await f.sync();
+  const original = f.kv.set; let release;
+  f.kv.set = async (key,value) => { if (key.endsWith(':pending') && value && !release) await new Promise(resolve=>{release=resolve;}); return original(key,value); };
+  const doc = await f.store.loadDocument(f.meta('book.md'), {backgroundCache:true});
+  assert.match(doc.content,/already delivered/); assert.equal(f.meta('book.md').availableOffline,false);
+  while (!release) await new Promise(resolve=>setTimeout(resolve,0));
+  release(); await f.store.tail; assert.equal(f.meta('book.md').availableOffline,true);
+});
+
 test('persistent LRU evicts only confirmed desktop copies, keeping catalog, imports and history', async t => {
   const f = await fixture(t, 100);
   for (const name of ['a.txt', 'b.txt', 'c.txt']) await f.add(name, name.repeat(6)); // 30 chars each

@@ -55,6 +55,11 @@ test('normalized dark pages keep light vector strokes and ignore their paper fil
   assert.equal(result.length, 1); assert.equal(result[0].width, 31);
 });
 
+test('a page-height gutter rule cannot join independent drawings across magazine columns', () => {
+  assert.deepEqual(paths([['constructPath',OPS.fill,[],[300,0,301,800]]]), []);
+  assert.equal(paths([['constructPath',OPS.fill,[],[300,100,301,300]]]).length, 1, 'short diagram strokes remain');
+});
+
 test('prose in the opposite column does not split a ruled table into isolated borders', () => {
   const rules = [100, 125, 210, 235].map(y => ({ x: 45, y, width: 240, height: 1 }));
   const prose = [{ x: 320, y: 155, width: 230, height: 14, text: 'A long sentence in the other column is unrelated to this table.' }];

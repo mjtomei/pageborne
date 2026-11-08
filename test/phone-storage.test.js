@@ -181,6 +181,31 @@ test('an idle preference flush and reverting an unsaved change do not block late
   assert.deepEqual(await new AtomicPhoneValue(kv, 'preferences').read(), { position: 3 });
 });
 
+test('position checkpoints avoid rewriting chats and restore across fresh origins', async () => {
+  const kv = memoryPhone(); const state = { updatedAt: 100, askChats: { kept: ['x'.repeat(250000)] }, positions: { book: { percent: 10 } }, selected: { id: 'book' } };
+  await new AtomicPhoneValue(kv, 'preferences').write(state);
+  const preferences = new PhonePreferences(kv); await preferences.read({});
+  const set = kv.set.bind(kv), writes = []; kv.set = (key, text) => { writes.push([key,text.length]); return set(key,text); };
+  preferences.schedule({ ...state, updatedAt: 200, positions: { book: { percent: 63 } } }); await preferences.flush();
+  assert(writes.every(([key]) => key.includes(':reading-position'))); assert(writes.reduce((sum,[,n])=>sum+n,0) < 1000);
+  const reopened = await new PhonePreferences(kv).read({}); assert.equal(reopened.positions.book.percent, 63); assert.deepEqual(reopened.askChats, state.askChats);
+  preferences.schedule({ ...reopened, selected: undefined, updatedAt: 300 }); await preferences.flush();
+  assert.equal((await new PhonePreferences(kv).read({})).selected, undefined, 'clearing selection also persists');
+});
+
+test('a rejected position save reclaims cache once, or stops native retries while retaining pending state', async () => {
+  const kv = memoryPhone(); let recoveries = 0, errors = 0;
+  const initial = { updatedAt: 100, positions: {} }; await new AtomicPhoneValue(kv, 'preferences').write(initial);
+  const preferences = new PhonePreferences(kv, () => errors++, 0, { recover: async () => { recoveries++; kv.failure = null; return 1000; } });
+  await preferences.read({}); kv.failure = () => { throw Object.assign(Error('Full'), { code: 'phone-storage-write' }); };
+  preferences.schedule({ ...initial, updatedAt: 200, positions: { book: { percent: 20 } } }); await preferences.flush();
+  assert.equal(recoveries, 1); assert.equal(errors, 0); assert.equal((await new PhonePreferences(kv).read({})).positions.book.percent, 20);
+  kv.failure = () => { throw Object.assign(Error('Full'), { code: 'phone-storage-write' }); }; preferences.schedule({ ...initial, updatedAt: 300 }); await preferences.flush();
+  assert.equal(errors, 1); assert.equal(preferences.suspended, true); assert(preferences.pending);
+  preferences.schedule({ ...initial, updatedAt: 400 }); await preferences.flush(); assert.equal(errors, 1);
+  kv.failure = null; await preferences.resume(); assert.equal((await new PhonePreferences(kv).read({})).updatedAt, 400);
+});
+
 test('a newer local position survives reopening before the phone write commits', async () => {
   const kv = memoryPhone(); const old = { updatedAt: 100, mode: 'speed', positions: { paper: { percent: 20 } } };
   await new AtomicPhoneValue(kv, 'preferences').write(old);

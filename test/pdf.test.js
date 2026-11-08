@@ -61,6 +61,51 @@ test('magazine rules around a two-column brief do not turn its contents into a f
   assert.ok(lines.findIndex(t => t.startsWith('LeftBrief') && t.endsWith('-17')) < lines.findIndex(t => t.startsWith('RightBrief')));
 });
 
+test('three magazine columns preserve body order and separately numbered two-column figures', () => {
+  const p = page(900, 1200);
+  p.paragraph('Left column prose with enough words', 50, 80, 240, 60);
+  p.paragraph('Middle column prose with enough words', 320, 80, 240, 12);
+  p.paragraph('Right column prose with enough words', 590, 80, 240, 12);
+  for (const [i,y] of [300,530,760].entries()) {
+    p.images.push({ x:320,y,width:510,height:200,kind:'drawing' });
+    p.rectangle(320,y,510,2); p.rectangle(320,y+198,510,2);
+    p.line(`Figure ${i+1}: A separate numbered diagram`,330,y+10,400);
+    p.rectangle(360,y+50,300,110);
+  }
+  const result = analyzePdfPage(p), lines = result.blocks.flatMap(b=>b.lines);
+  assert.equal(lines.length, p.text.length, 'every source line appears once');
+  assert.ok(lines.findIndex(t=>t.text.endsWith('words-59')) < lines.findIndex(t=>t.text.startsWith('Middle')));
+  assert.ok(lines.findIndex(t=>t.text.startsWith('Middle') && t.text.endsWith('-11')) < lines.findIndex(t=>t.text.startsWith('Right')));
+  const figures = result.blocks.filter(b=>b.kind === 'figure');
+  assert.equal(figures.length, 3);
+  assert.ok(figures.every(b=>b.width>=510 && b.height>=200 && b.height<230));
+  assert.equal(result.split, null, 'a binary OCR split must not be applied to three columns');
+});
+
+test('a large magazine introduction does not hide a smaller parallel prose column as marginalia', () => {
+  const p = page(900,1200);
+  for (let i=0;i<20;i++) {
+    p.text.push({ x:55,y:500+i*25,width:510,height:22,text:'An introduction in larger type with a long line of prose.' });
+    p.rectangle(55,500+i*25,510,20);
+    p.line('A smaller body column with readable prose.',590,500+i*25,240);
+  }
+  const result=analyzePdfPage(p);
+  assert.equal(result.blocks.flatMap(b=>b.lines).length,p.text.length);
+  assert.ok(!result.marginMasks.length);
+});
+
+test('a thin gutter rule does not stretch a short magazine pull quote into a full-height image', () => {
+  const p=page(900,1200);
+  p.paragraph('Left column prose with enough words',50,80,240,65);
+  p.paragraph('Middle pull quote with several words',320,130,240,10);
+  p.paragraph('Right column prose with enough words',590,80,240,65);
+  p.rectangle(305,80,1,1040); p.rectangle(575,80,1,1040);
+  for (const y of [80,300]) { p.rectangle(320,y,120,30); p.images.push({x:320,y,width:120,height:30,kind:'drawing'}); }
+  const result=analyzePdfPage(p);
+  assert.equal(result.blocks.flatMap(b=>b.lines).length,p.text.length);
+  assert.ok(result.blocks.filter(b=>b.kind==='figure').every(b=>b.height<100));
+});
+
 test('disconnected panels stay one figure and both caption columns precede the body', () => {
   const p = page();
   for (const box of [{ x: 80, y: 50, width: 440, height: 90 },

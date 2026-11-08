@@ -100,6 +100,20 @@ test('a phone cache with obsolete chapter navigation receives upgraded OCR metad
   await remote.read(f.key); assert.equal(f.writes(), before + 1);
 });
 
+test('a repaired layout replaces the phone copy even when the OCR engine is unchanged', async t => {
+  const f = await fixture(t); await f.publish();
+  const remote = desktopPdfCache(f.local, f.client, f.name);
+  const original = await remote.read(f.key);
+  f.saved.layout.blocks[0].reflow.rows[0].text = 'Corrected column order.';
+  await f.publish();
+  const repaired = await remote.read(f.key);
+  assert.equal(repaired.desktopEngine, original.desktopEngine);
+  assert.notEqual(repaired.desktopSha256, original.desktopSha256);
+  assert.equal(repaired.layout.blocks[0].reflow.rows[0].text, 'Corrected column order.');
+  assert.equal(unpackPdfPreparation(structuredClone(repaired)).desktopSha256, repaired.desktopSha256);
+  const writes = f.writes(); await remote.read(f.key); assert.equal(f.writes(), writes);
+});
+
 test('a preparation over 16 MiB transfers in chunks and survives a phone cache restart offline', async t => {
   const f = await fixture(t);
   // Large OCR text is part of the real layout, not extra transfer padding.

@@ -2,6 +2,7 @@
 // A page may alternate full-width bands and left-then-right columns.
 import { pdfMarginMasks, insidePdfMargin } from './pdf-margins.js';
 import { pdfFigures } from './pdf-figures.js';
+import { pdfColumnRegions } from './pdf-columns.js';
 import { pdfSourcePoint } from './pdf-orientation.js';
 import { preparePdfNative, pdfNativeWindow, pdfImageEnd } from './pdf-native.js';
 export const PDF_WIDTH = 576;
@@ -146,8 +147,25 @@ export function analyzePdfPage({ width, height, data, text = [], figureText = te
   }
   if (mode === 'double' && split == null) split = (x0 + x1) / 2;
   if (mode === 'auto' && best < .55) split = null;
-  const regions = [];
-  if (split == null) regions.push([x0, y0, x1, y1]);
+  const magazine = mode === 'auto' && pdfColumnRegions(text, images.filter(image => image.width*image.height < width*height*.85), bounds, lineHeight);
+  const regions = magazine || [];
+  if (magazine) {
+    // A thin publisher rule at a detected gutter must not connect a short
+    // pull quote to the bottom of an otherwise empty column. Keep its pixels
+    // in the original PDF, but exclude the rule from paragraph segmentation.
+    const candidates = new Set(regions.flatMap(r => [r[0],r[2]]).filter(x=>x>x0 && x<x1)
+      .flatMap(x=>Array.from({length:5},(_,i)=>Math.floor(x)+i-2)));
+    const rules = [...candidates].filter(x=>x>=0 && x<width && !text.some(t=>t.x<x && t.x+t.width>x)
+      && Array.from({length:height},(_,y)=>rowInk(x,x+1,y)>0).filter(Boolean).length > height*.7);
+    for (let y=0;y<height && rules.length;y++) {
+      const ink=rules.filter(x=>rowInk(x,x+1,y)>0).sort((a,b)=>a-b); let count=0;
+      for (let x=0;x<width;x++) { if (x===ink[count]) count++; sums[y*stride+x+1]-=count; }
+    }
+  }
+  // The single pixel split is not a valid OCR correction boundary in a
+  // three-column layout. These regions already preserve the text geometry.
+  if (magazine) split = null;
+  else if (split == null) regions.push([x0, y0, x1, y1]);
   else {
     const spans = [];
     // A scanned column edge may drift into the wider gutter used to score

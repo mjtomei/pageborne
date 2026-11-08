@@ -183,8 +183,8 @@ export function centeredWords(lines) {
 
 export class SpeedReading {
   constructor() { this.entries = []; this.cursor = 0; this.count = 3; this.rate = 250; this.finished = false; }
-  load(layout, y = 0, saved) {
-    this.entries = speedEntries(layout);
+  load(layout, y = 0, saved, preparedEntries) {
+    this.entries = preparedEntries || speedEntries(layout);
     // Count each original word once (even when split for display), with twice
     // the dwell for headings. Images/manual waits have no predictable duration.
     this.remainingWeights = new Float64Array(this.entries.length + 1);

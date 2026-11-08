@@ -383,10 +383,15 @@ export class GlassesDisplay {
       } else {
         const page = pageDefinition(mode, content), validation = validateEvenHubPageContainer(page);
         const result = await this.bridge.createStartUpPageContainer(page);
-        if (result !== 0) throw Object.assign(new Error(`Could not create the text page (${result}). Close and reopen the reader.`), {
+        // A reopened WebView can inherit the host's existing page. Try one
+        // acknowledged rebuild for a locally valid page rejected as invalid.
+        // Other errors (including memory/size failures) keep their own result.
+        const rebuilt = result === 1 && validation.valid && await this.bridge.rebuildPageContainer(page);
+        if (result !== 0 && !rebuilt) throw Object.assign(new Error(`Could not create the text page (${result}). Close and reopen the reader.`), {
           context: { result, resultName: ['success', 'invalid', 'oversize', 'outOfMemory'][result] || 'unknown',
             validation: validation.valid ? 'valid' : validation.code, containers: page.containerTotalNum },
         });
+        if (rebuilt) this.diagnostics.log('display-startup-rebuilt', { result });
         this.created = true;
       }
     });

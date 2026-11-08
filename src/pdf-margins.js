@@ -66,6 +66,10 @@ export function pdfMarginMasks({ width, height, text, images }) {
     // Multiple lines distinguish marginalia from an isolated label/marker.
     let removeNotes = notes.length >= 2
       && Math.max(...notes.map(t => t.y)) - Math.min(...notes.map(t => t.y)) >= lineHeight * .7;
+    // Magazine introductions can use larger type than the next body column.
+    // Substantial parallel prose remains body text regardless of that font size.
+    const column = lines.filter(t => outside(t) && t.width >= width * .22);
+    if (column.length >= 6 && Math.max(...column.map(bottom))-Math.min(...column.map(t=>t.y)) >= height*.2) removeNotes = false;
     // A parallel column of comparable type running the length of the body is
     // substantive text, even if the columns have very different widths.
     if (Math.max(...notes.map(bottom)) - Math.min(...notes.map(t => t.y))

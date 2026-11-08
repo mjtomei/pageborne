@@ -70,8 +70,8 @@ export class Reader {
     }
     this.mode = mode; this.playing = false; this.elapsed = 0; this.target = this.y; this.onChange();
   }
-  setSpeedDocument(layout, saved) {
-    const restored = this.speedReading.load(layout, this.positionY, saved);
+  setSpeedDocument(layout, saved, preparedEntries) {
+    const restored = this.speedReading.load(layout, this.positionY, saved, preparedEntries);
     this.pageLayout = layout;
     const entries = this.speedReading.entries;
     this.pageRemainingWords = new Float64Array(entries.length + 1);

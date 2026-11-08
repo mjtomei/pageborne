@@ -1,6 +1,6 @@
 // A decorative frame can surround columns; several disconnected panels can
 // form one figure. Use text and pixels to distinguish these two cases.
-import { pdfTextRows, reflowPdfBlock } from './pdf-reflow.js';
+import { pdfTextRows, pdfTextRuns, reflowPdfBlock } from './pdf-reflow.js';
 import { pdfCaptionReference } from './pdf-captions.js';
 
 // Scanned axes/grids have no PDF drawing operators. Find connected ink larger
@@ -77,7 +77,8 @@ export function pdfFigures({ width, height, data, text, images, pageMasks }) {
     const p = (y * width + x) * 4;
     return data[p + 3] > 20 && data[p] * .2126 + data[p + 1] * .7152 + data[p + 2] * .0722 < 235;
   };
-  const prose = text.filter(t => t.width > width * .25 && t.text.trim().length >= 30);
+  const runs = pdfTextRuns(text);
+  const prose = runs.filter(t => t.width > width * .2 && t.text.trim().length >= 30);
   const framedText = box => {
     if (box.kind !== 'drawing' || box.width * box.height < width * height * .1) return false;
     const lines = prose.filter(t => t.x >= box.x - 4 && t.x + t.width <= box.x + box.width + 4
@@ -96,6 +97,23 @@ export function pdfFigures({ width, height, data, text, images, pageMasks }) {
     return true;
   };
   images = images.filter(box => !framedText(box));
+  images = images.map(box => {
+    // Small ornaments sometimes carry loose Bézier control-point bounds that
+    // extend into the next column. Only visible non-text ink bounds the drawing.
+    if (box.kind !== 'drawing' || box.width > width*.3 || box.height > height*.08) return box;
+    const labels = text.filter(t => t.x < box.x+box.width && t.x+t.width > box.x
+      && t.y < box.y+box.height && t.y+t.height > box.y);
+    let left=Infinity, top=Infinity, right=0, bottom=0;
+    for (let y=Math.max(0,Math.floor(box.y));y<Math.min(height,Math.ceil(box.y+box.height));y++) {
+      const rows=labels.filter(t=>y>=t.y-2 && y<t.y+t.height+2);
+      for (let x=Math.max(0,Math.floor(box.x));x<Math.min(width,Math.ceil(box.x+box.width));x++) {
+        if (!ink(x,y) || rows.some(t=>x>=t.x-2 && x<t.x+t.width+2)) continue;
+        left=Math.min(left,x);right=Math.max(right,x+1);top=Math.min(top,y);bottom=Math.max(bottom,y+1);
+      }
+    }
+    if (!Number.isFinite(left)) return box;
+    return {...box,x:left,y:top,width:right-left,height:bottom-top};
+  });
   // PDF operators often describe the plot itself but omit its text labels.
   // Extend through nearby short label rows, stopping before any prose/caption.
   const labelRows = pdfTextRows(text).map(row => ({ ...row,
@@ -116,7 +134,11 @@ export function pdfFigures({ width, height, data, text, images, pageMasks }) {
   const groups = [];
   for (const box of panels.sort((a, b) => a.y - b.y)) {
     const last = groups.at(-1); const end = last && last.y + last.height;
-    const barrier = last && text.some(t => (prose.includes(t) || pdfCaptionReference(t.text)) && t.y >= end - 2 && t.y + t.height <= box.y + 2);
+    const within = (t,b) => t.x >= b.x-2 && t.x+t.width <= b.x+b.width+2 && t.y >= b.y-2 && t.y+t.height <= b.y+b.height+2;
+    const union = last && { x:Math.min(last.x,box.x),y:Math.min(last.y,box.y),width:Math.max(last.x+last.width,box.x+box.width)-Math.min(last.x,box.x),height:Math.max(end,box.y+box.height)-Math.min(last.y,box.y) };
+    const barrier = last && (runs.some(t => (prose.includes(t) || pdfCaptionReference(t.text)) && t.y >= end - 2 && t.y + t.height <= box.y + 2)
+      || runs.some(t => pdfCaptionReference(t.text) && within(t,box) && t.y < box.y+35)
+      || prose.some(t => within(t,union) && !within(t,box) && !last.parts.some(b=>within(t,b))));
     if (last && box.y <= end + height * .06 && !barrier) {
       const x = Math.min(last.x, box.x); const right = Math.max(last.x + last.width, box.x + box.width);
       last.height = Math.max(end, box.y + box.height) - last.y; last.x = x; last.width = right - x;

@@ -18,11 +18,12 @@ await server.listen();
 const browser = process.env.LIBRARY_BROWSER === 'webkit'
   ? await webkit.launch({ executablePath: process.env.WEBKIT_PATH, headless: true })
   : await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true, args: ['--disable-gpu'] });
-const content = '# Desktop book\n\n' + 'This passage downloads only when opened. '.repeat(30), bytes = Buffer.from(content);
-const file = { name: 'book.md', title: 'Desktop book', bytes: bytes.length, words: 180, sha256: createHash('sha256').update(bytes).digest('hex') };
 const report = [];
 try {
-  for (const mode of ['ok', 'false', 'null']) {
+  for (const mode of ['ok', 'false', 'null', 'large']) {
+    const healthy = ['ok','large'].includes(mode);
+    const content = '# Desktop book\n\n' + 'This passage downloads only when opened. '.repeat(mode === 'large' ? 32000 : 30), bytes = Buffer.from(content);
+    const file = { name: 'book.md', title: 'Desktop book', bytes: bytes.length, words: 180, sha256: createHash('sha256').update(bytes).digest('hex') };
     const values = new Map(), errors = [], requests = []; let writes = 0, offline = false;
     const context = await browser.newContext({ viewport: { width: 440, height: 806 }, isMobile: true, hasTouch: true });
     await context.route(endpoint + '/**', async route => {
@@ -31,12 +32,16 @@ try {
       if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
       if (offline) return route.abort();
       if (url.pathname.endsWith('/pageborne/library')) return route.fulfill({ headers, json: { version: 1, id: 'fixture', directory: 'Desktop library', files: [file], skipped: [] } });
-      if (url.pathname.endsWith('/pageborne/library/read')) return route.fulfill({ headers, json: { ...file, offset: 0, data: bytes.toString('base64') } });
+      if (url.pathname.endsWith('/pageborne/library/read')) {
+        const { offset = 0 } = request.postDataJSON();
+        return route.fulfill({ headers, json: { ...file, offset, data: bytes.subarray(offset,offset+768*1024).toString('base64') } });
+      }
       return route.fulfill({ headers, json: { version: 1, observations: 2, days: [], documents: [], entries: [], messages: [], sessions: [], state: 'idle' } });
     });
     await context.exposeFunction('__nativeStorage', ({ method, data }) => {
       if (method === 'getLocalStorage') return mode === 'null' ? null : values.get(data.key) || '';
-      writes++; if (mode !== 'ok') return mode === 'false' ? false : null;
+      writes++; if (mode === 'large' && data.key.includes(':doc:')) return new Promise(() => {});
+      if (!healthy) return mode === 'false' ? false : null;
       values.set(data.key, data.value); return true;
     });
     await context.addInitScript(({ endpoint, mode }) => {
@@ -44,7 +49,7 @@ try {
       window.flutter_inappwebview = { async callHandler(_, payload) {
         const message = JSON.parse(payload);
         if (message.method.endsWith('LocalStorage')) return window.__nativeStorage(message);
-        if (message.method === 'createStartUpPageContainer') return mode === 'ok' ? 0 : mode === 'null' ? null : 1;
+        if (message.method === 'createStartUpPageContainer') return ['ok','large'].includes(mode) ? 0 : mode === 'null' ? null : 1;
         return message.method === 'updateImageRawData' ? 0 : true;
       } };
     }, { endpoint, mode });
@@ -54,15 +59,20 @@ try {
     await expect(page.locator('#library-sync')).toBeEnabled();
     assert(!requests.some(r => r.path.endsWith('/library/read')), 'catalog must not eagerly download bodies');
     await expect(row.locator('.document-details')).toContainText('On desktop');
-    if (mode !== 'ok') {
+    if (!healthy) {
       await expect(page.locator('#import')).toBeDisabled(); await expect(row.locator('.document-delete')).toBeDisabled();
       await expect(page.locator('#library-storage-status')).toContainText('Even storage is unavailable');
       assert(writes <= 2, 'unavailable diagnostics must stop native save retries');
     }
-    await row.locator('.document-card').tap(); await expect(page.locator('#bookmark')).toBeEnabled();
+    await row.locator('.document-card').tap(); await expect(page.locator('#bookmark')).toBeEnabled({ timeout: 30000 });
     await expect(page.locator('#title')).toHaveText('Desktop book');
     await expect(page.locator('#notice-text')).not.toContainText('Could not open');
     assert(requests.some(r => r.path.endsWith('/library/read')));
+    if (mode === 'large') {
+      await expect(page.locator('#notice-text')).not.toContainText('Indexing');
+      await page.locator('#position').evaluate(input => { input.value = '500'; input.dispatchEvent(new Event('input', {bubbles:true})); input.dispatchEvent(new Event('change', {bubbles:true})); });
+      await expect(page.locator('#position-value')).toContainText('50%');
+    }
     await showLibrary(page);
     await expect(row.locator('.document-details')).toContainText(mode === 'ok' ? 'Offline' : 'On desktop');
     assert(!requests.some(r => /\/library\/(remove|commit|chunk|status)$/.test(r.path)), 'read-only operations must never mutate desktop files');

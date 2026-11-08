@@ -165,6 +165,7 @@ export class PdfDocument {
         try {
           const saved = packPdfPreparation(this.layout, this.marginMasks, this.pageScales);
           if (restored.desktopEngine) saved.desktopEngine = restored.desktopEngine;
+          if (restored.desktopSha256) saved.desktopSha256 = restored.desktopSha256;
           await this.preparationCache.write(cacheKey, saved, () => !this.destroyed);
         }
         catch (error) { this.report('pdf-contents-cache-error', error); }

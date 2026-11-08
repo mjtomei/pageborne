@@ -60,7 +60,8 @@ export function unpackPdfPreparation(saved) {
   // invalidating the prepared text, figures or OCR in the cache.
   layout.pages = [0];
   while (layout.pages.at(-1) < layout.maxY) layout.pages.push(pdfPageTurn(layout, layout.pages.at(-1), 1));
-  return { layout, marginMasks: new Map(saved.marginMasks), pageScales: new Map(saved.pageScales), desktopEngine: saved.desktopEngine };
+  return { layout, marginMasks: new Map(saved.marginMasks), pageScales: new Map(saved.pageScales),
+    desktopEngine: saved.desktopEngine, desktopSha256: saved.desktopSha256 };
 }
 
 // Use the same durable SDK storage as original files on the phone; IndexedDB

@@ -1,4 +1,5 @@
 import { addDocument, replaceDocument, updateDocumentDates, assertDocumentUnchanged, localSnapshot, documentMetadata, hashDocument, MAX_DOCUMENTS } from './library.js';
+import { safeTimeout as setTimeout, cancelTimeout as clearTimeout } from './timers.js';
 
 export const STORAGE_PREFIX = 'even-reader:phone:v1';
 export const CHUNK_CHARS = 32000;
@@ -6,7 +7,8 @@ export const CHUNK_CHARS = 32000;
 export const DOCUMENT_CACHE_CHARS = 32 * 1024 * 1024;
 const JOURNAL = `${STORAGE_PREFIX}:pending`;
 const bridgeHealth = new WeakMap();
-export const storageUnavailable = error => error?.code === 'phone-storage-unavailable';
+export const storageUnavailable = error => error?.code === 'phone-storage-unavailable'
+  || error?.code === 'bridge-timeout' && error.operation?.startsWith('storage-');
 const remoteBacked = doc => doc.remote && doc.remote.name === doc.id && doc.remote.sha256 === doc.sha256
   && /^[a-f0-9]{64}$/.test(doc.sha256) && typeof doc.remote.libraryId === 'string' && doc.remote.libraryId
   && typeof doc.remote.endpoint === 'string' && doc.remote.endpoint;
@@ -214,7 +216,7 @@ export class PhoneLibrary {
     }
     return this.snapshot;
   }
-  async loadDocument(expected, { signal, progress = () => {} } = {}) {
+  async loadDocument(expected, { signal, progress = () => {}, backgroundCache = false } = {}) {
     const cached = await this.serialize(async () => {
       signal?.throwIfAborted();
       const meta = this.catalog.documents.find(doc => doc.id === expected.id);
@@ -222,7 +224,7 @@ export class PhoneLibrary {
       if (!meta.body) return null;
       try {
         const content = await readChunks(this.kv, meta.body, { signal });
-        if (this.onDemand && remoteBacked(meta) && !this.readOnly) {
+        if (!backgroundCache && this.onDemand && remoteBacked(meta) && !this.readOnly) {
           try { await this.commit({ ...this.catalog, documents: this.catalog.documents.map(d => d.id === meta.id ? { ...d, cachedAt: Date.now() } : d) }); }
           catch (error) { this.cacheError = error; this.cacheChanged(); }
         }
@@ -232,15 +234,28 @@ export class PhoneLibrary {
       if (signal?.aborted || !remoteBacked(expected) || !(storageUnavailable(error) || storageWriteRejected(error))) throw error;
       this.readOnly = true; this.cacheError = error; this.cacheChanged(); return null;
     });
-    if (cached) return cached;
+    if (cached) {
+      if (backgroundCache && this.onDemand && remoteBacked(expected) && !this.readOnly) {
+        void this.serialize(async () => {
+          if (this.readOnly || signal?.aborted) return;
+          const meta = this.catalog.documents.find(d => d.id === expected.id);
+          if (!meta?.body || meta.sha256 !== expected.sha256) return;
+          await this.commit({ ...this.catalog, documents: this.catalog.documents.map(d => d.id === meta.id ? { ...d, cachedAt: Date.now() } : d) });
+        }).catch(error => { this.cacheError = error; this.cacheChanged(); });
+      }
+      return cached;
+    }
     if (!remoteBacked(expected) || !this.download) throw Error('This document needs a desktop connection. Connect and try again.');
     const doc = await this.download(expected, { signal, progress });
     signal?.throwIfAborted();
     if (doc.id !== expected.id || await hashDocument(doc) !== expected.sha256) throw Error('Downloaded document does not match the catalog. Sync and try again.');
     assertDocumentUnchanged(this.snapshot.documents.find(d => d.id === expected.id), expected);
     if (!this.readOnly && doc.content.length <= this.cacheChars) {
-      try { await this.cacheDocument(doc, expected, signal); }
-      catch (error) { if (signal?.aborted) throw error; this.cacheError = error; this.cacheChanged(); }
+      const cache = this.cacheDocument(doc, expected, signal).catch(error => {
+        if (signal?.aborted) { if (!backgroundCache) throw error; return; }
+        this.cacheError = error; this.cacheChanged();
+      });
+      if (!backgroundCache) await cache;
     }
     signal?.throwIfAborted();
     assertDocumentUnchanged(this.snapshot.documents.find(d => d.id === expected.id), expected);
@@ -424,13 +439,22 @@ export async function retryAfterStorageRecovery(work, recover) {
   }
 }
 
+const positionFields = ['positions', 'selected', 'recent', 'openedAt', 'updatedAt'];
+const stablePreferences = value => Object.fromEntries(Object.entries(value).filter(([key]) => !positionFields.includes(key)));
 export class PhonePreferences {
-  constructor(kv, onError, delay = 500) {
+  constructor(kv, onError = () => {}, delay = 500, { recover = async () => 0 } = {}) {
     this.value = new AtomicPhoneValue(kv, 'preferences'); this.onError = onError; this.delay = delay;
+    this.position = new AtomicPhoneValue(kv, 'reading-position'); this.recover = recover;
     this.pending = null; this.saved = null; this.running = null; this.timer = null;
   }
   async read(fallback) {
-    const saved = await this.value.read();
+    let saved = await this.value.read();
+    const position = await this.position.read();
+    this.stable = saved && JSON.stringify(stablePreferences(saved));
+    if (saved && position?.version === 1 && Number(position.updatedAt) > Number(saved.updatedAt || 0)) {
+      saved = { ...saved }; for (const key of positionFields) delete saved[key];
+      Object.assign(saved, position.state);
+    }
     this.saved = saved ? JSON.stringify(saved) : null;
     // A WebView can close before its async phone-storage write commits. Its
     // synchronous local copy must not be replaced by an older phone save.
@@ -441,22 +465,35 @@ export class PhonePreferences {
     const text = JSON.stringify(value);
     if (text === this.saved && !this.running) { this.pending = null; clearTimeout(this.timer); this.timer = null; return; }
     this.pending = text;
-    if (!this.timer && !this.running) this.timer = setTimeout(() => this.flush(), this.delay);
+    if (!this.suspended && !this.timer && !this.running) this.timer = setTimeout(() => this.flush(), this.delay);
   }
+  suspend() { this.suspended = true; clearTimeout(this.timer); this.timer = null; }
+  resume() { this.suspended = false; this.recovered = false; return this.flush(); }
   flush() {
     clearTimeout(this.timer); this.timer = null;
     if (this.running) return this.running;
-    if (this.pending == null) return Promise.resolve();
+    if (this.pending == null || this.suspended) return Promise.resolve();
     this.running = (async () => {
       try {
         while (this.pending != null) {
           const text = this.pending; this.pending = null;
-          await this.value.write(JSON.parse(text)); this.saved = text;
+          const value = JSON.parse(text), stable = JSON.stringify(stablePreferences(value));
+          const write = () => stable === this.stable && Number.isFinite(value.updatedAt) && value.updatedAt > 0
+            ? this.position.write({ version: 1, updatedAt: value.updatedAt, state: Object.fromEntries(positionFields.filter(key => key in value).map(key => [key, value[key]])) })
+            : this.value.write(value);
+          try {
+            await retryAfterStorageRecovery(write, async () => {
+              if (this.recovered) return 0;
+              this.recovered = true; return this.recover();
+            });
+          } catch (error) { this.pending ??= text; throw error; }
+          this.stable = stable; this.saved = text;
         }
       } catch (error) {
         // Read the committed pointer before another write after an uncertain
         // failure; the previous complete value remains available on restart.
-        try { await this.value.read(); } catch {}
+        try { await this.value.read(); await this.position.read(); } catch {}
+        if (storageWriteRejected(error) || storageUnavailable(error)) this.suspend();
         this.onError(error);
       } finally { this.running = null; }
     })();

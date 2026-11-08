@@ -21,7 +21,7 @@ try {
   await page.evaluate(async () => {
     const nativeTimeout = window.setTimeout.bind(window);
     window.delay = ms => new Promise(resolve => nativeTimeout(resolve, ms));
-    window.transport = { calls: [], active: 0, maximum: 0, delayMs: 0, holdTile: null };
+    window.transport = { calls: [], active: 0, maximum: 0, delayMs: 0, holdTile: null, createResult: 1 };
     window.flutter_inappwebview = { async callHandler(_, payload) {
       const m = JSON.parse(payload), t = window.transport;
       const display = ['createStartUpPageContainer', 'rebuildPageContainer', 'textContainerUpgrade', 'updateImageRawData', 'shutDownPageContainer'].includes(m.method);
@@ -33,7 +33,8 @@ try {
           if (t.holdTile === m.data.containerName) await new Promise(resolve => { t.release = resolve; });
           else if (t.delayMs) await window.delay(t.delayMs);
         }
-        return ['createStartUpPageContainer', 'updateImageRawData'].includes(m.method) ? 0 : true;
+        if (m.method === 'createStartUpPageContainer') return t.createResult;
+        return m.method === 'updateImageRawData' ? 0 : true;
       } finally { t.active--; call.finished = performance.now(); }
     } };
     const { GlassesDisplay } = await import('/src/glasses.js');
@@ -41,9 +42,12 @@ try {
     window.diagnostics = new Diagnostics();
     window.display = new GlassesDisplay({ diagnostics, onAction() {}, onStatus: value => window.statusText = value });
     await display.connect();
+    if (!display.ready || diagnostics.counts['display-startup-rebuilt'] !== 1) throw Error('Existing native page was not recovered');
+    transport.createResult = 0;
     window.resetTransport = () => Object.assign(transport, { calls: [], maximum: 0, delayMs: 0, holdTile: null, release: null });
     window.imageCalls = () => transport.calls.filter(c => c.method === 'updateImageRawData');
   });
+  results.startupInvalidRecovered = true;
   const sample = process.env.PDF_SAMPLE ? await readFile(process.env.PDF_SAMPLE) : pdfFixture('figure');
   results.pdf = await page.evaluate(async content => {
     const { PdfDocument } = await import('/src/pdf.js');

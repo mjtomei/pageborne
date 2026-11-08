@@ -64,9 +64,9 @@ export function paintedPdfPaths(operatorList, boxes, OPS, width, height, transfo
       width: (boxes.maxX(i) - boxes.minX(i)) * width, height: (boxes.maxY(i) - boxes.minY(i)) * height });
   }
   return paths.filter(box => box.width > 0 && box.height > 0
-    // Publisher rules along the page edge can otherwise connect every panel
+    // Publisher rules along page edges or gutters can connect every panel
     // and paragraph into one enormous drawing. They remain in the raster.
-    && !(box.width < 2 && box.height > height * .7 && (box.x < width * .1 || box.x > width * .9))
+    && !(box.width < 2 && box.height > height * .7)
     && !(box.height < 2 && box.width > width * .75 && (box.y < height * .08 || box.y > height * .92)));
 }
 

@@ -195,7 +195,9 @@ try {
       const groupedDay = mode === 'web' ? '2000-01-03' : '2000-01-02';
       await page.evaluate(async ({ day, mode }) => {
         const source = window.__reading.entries.find(e => e.document.id === 'paper.md');
-        const entry = (id, hour, second, extra = {}) => ({ ...source, id: `grouped-${mode}-${id}`, version: undefined, kind: 'document', day,
+        // These are legacy observations. Do not inherit a modern "leave"
+        // marker, which would correctly split every fixture into a new visit.
+        const entry = (id, hour, second, extra = {}) => ({ ...source, id: `grouped-${mode}-${id}`, version: undefined, reason: undefined, kind: 'document', day,
           at: `${day}T${hour}:00:${String(second).padStart(2, '0')}.000Z`, endedAt: `${day}T${hour}:01:00.000Z`, words: 1, seconds: 1, ...extra });
         await window.__reading.add([
           entry('earliest', '10', 0, { words: 3 }),

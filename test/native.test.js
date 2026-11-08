@@ -77,6 +77,15 @@ test('an SDK timeout never allows exit or reconnect to overlap the pending call'
   assert.equal(diagnostics.active, null);
   assert.deepEqual(events.filter(e => e.type === 'bridge-start').map(e => e.name), ['frame', 'exit']);
 });
+test('storage queued behind a hung display expires without ever executing late', async () => {
+  const lane = new BridgeLane({ log() {} }, 25); let release, writes = 0;
+  const frame = lane.run('text-frame', () => new Promise(resolve => { release = resolve; }));
+  const queued = lane.run('storage-write', () => { writes++; });
+  await Promise.all([assert.rejects(frame, { code: 'bridge-timeout' }), assert.rejects(queued, { code: 'bridge-timeout', queued: true })]);
+  assert.equal(lane.busy, true); assert.equal(writes, 0);
+  release(); await lane.tail; assert.equal(writes, 0, 'expired writes must not commit stale state');
+  await lane.run('storage-write', () => { writes++; }); assert.equal(writes, 1);
+});
 test('diagnostic history is bounded and preserves a prior unfinished operation', () => {
   let value = JSON.stringify({ startedAt: 'before', active: { name: 'text-frame' }, events: [] });
   const storage = { getItem: () => value, setItem: (_key, data) => { value = data; } };

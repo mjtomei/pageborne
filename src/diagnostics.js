@@ -108,21 +108,26 @@ export class Diagnostics {
 export class BridgeLane {
   constructor(diagnostics, timeoutMs = 8000) { this.diagnostics = diagnostics; this.timeoutMs = timeoutMs; this.tail = Promise.resolve(); this.busy = false; }
   run(name, operation, { quiet = false, context = {} } = {}) {
-    let timer; let rejectTimeout;
+    let timer; let rejectTimeout; let expired = false, started = false;
     const timeout = new Promise((_, reject) => { rejectTimeout = reject; });
+    // A hung display call also blocks queued storage. Bound the queue wait,
+    // and never execute an expired write later against newer application state.
+    timer = setTimeout(() => {
+      expired = true;
+      this.diagnostics.log('bridge-timeout', { name, ...context, queued: !started });
+      rejectTimeout(Object.assign(new Error(`${name} timed out. Close and reopen the reader if it stays pending.`),
+        { code: 'bridge-timeout', operation: name, context, queued: !started }));
+    }, this.timeoutMs);
     const original = this.tail.catch(() => {}).then(async () => {
-      this.busy = true; const started = performance.now();
+      if (expired) return;
+      started = true;
+      this.busy = true; const startedAt = performance.now();
       this.diagnostics.active = { name, ...context, at: new Date().toISOString() };
       if (!quiet) this.diagnostics.log('bridge-start', { name, ...context });
-      timer = setTimeout(() => {
-        this.diagnostics.log('bridge-timeout', { name, ...context });
-        rejectTimeout(Object.assign(new Error(`${name} timed out. Close and reopen the reader if it stays pending.`),
-          { code: 'bridge-timeout', operation: name, context }));
-      }, this.timeoutMs);
       try {
         const result = await operation();
         this.diagnostics.active = null;
-        if (!quiet) this.diagnostics.log('bridge-ok', { name, ...context, ms: Math.round(performance.now() - started) });
+        if (!quiet) this.diagnostics.log('bridge-ok', { name, ...context, ms: Math.round(performance.now() - startedAt) });
         return result;
       } catch (error) {
         this.diagnostics.active = null;

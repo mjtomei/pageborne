@@ -27,6 +27,27 @@ export function pdfTextRows(lines) {
   return rows;
 }
 
+// Unlike a page-wide baseline, a text run stops at a column gutter. Use these
+// runs when testing prose/caption barriers before the columns are partitioned.
+export function pdfTextRuns(lines) {
+  return pdfTextRows(lines).flatMap(row => {
+    const runs=[]; let items=[];
+    for (const item of row.items) {
+      const previous=items.at(-1);
+      if (previous && item.x-previous.x-previous.width > Math.max(item.height,previous.height)*.9) {
+        runs.push(items); items=[];
+      }
+      items.push(item);
+    }
+    if (items.length) runs.push(items);
+    return runs.map(items => {
+      const x=items[0].x,y=Math.min(...items.map(t=>t.y));
+      return { x,y,width:Math.max(...items.map(t=>t.x+t.width))-x,height:Math.max(...items.map(t=>t.y+t.height))-y,
+        text:pdfTextRows(items).map(r=>r.text).join(' '),items };
+    });
+  });
+}
+
 // Approximate transcript boxes can cut through a printed ascender/descender. Reunite
 // a shallow, unrecognized strip only when its ink actually connects across
 // the cut to a text block. Isolated symbols, rules and figures stay intact.
