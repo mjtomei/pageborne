@@ -7,11 +7,11 @@ import { displayProbe } from './display-probe.mjs';
 
 process.env.PAGEBORNE_ASK_ORIGINS = 'https://sync.test';
 const out = 'test-results/ask-sync'; await mkdir(out, { recursive: true });
-const vite = await createServer({ plugins: [displayProbe()], cacheDir: '.state/vite-ask-sync', server: { host: '127.0.0.1', port: 0, hmr: false }, clearScreen: false });
+const vite = await createServer({ plugins: [displayProbe()], cacheDir: '.state/vite-ask-sync', optimizeDeps: { entries: ['index.html'] }, server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, clearScreen: false });
 await vite.listen(); const results = [];
 try {
-  for (const engine of [chromium, webkit]) {
-    const browser = await engine.launch({ headless: true, executablePath: engine === chromium ? '/usr/bin/google-chrome' : process.env.WEBKIT_PATH });
+  for (const engine of [chromium, webkit].filter(engine => !process.env.ASK_BROWSER || engine.name() === process.env.ASK_BROWSER)) {
+    const browser = await engine.launch({ headless: true, args: engine === chromium ? ['--disable-gpu'] : [], executablePath: engine === chromium ? (process.env.CHROME_PATH || '/usr/bin/google-chrome') : process.env.WEBKIT_PATH });
     const page = await browser.newPage({ viewport: { width: 440, height: 806 } });
     const result = { browser: engine.name(), passed: false, errors: [] }; results.push(result);
     page.on('pageerror', error => result.errors.push(error.message));
@@ -60,6 +60,7 @@ try {
           if (delayed) { const waiting = delayed; delayed = null; await waiting; }
           return json(response);
         }
+        if (url.pathname.startsWith('/api/pageborne/')) return route.fulfill({ status: 404, headers, json: {} });
         throw Error(`Unexpected route ${url.pathname}`);
       });
       const body = () => page.evaluate(() => window.__body);
@@ -152,6 +153,15 @@ try {
       assert(Math.abs(await page.evaluate(key => [...document.querySelectorAll('.ask-message')].find(el => el.dataset.key === key).getBoundingClientRect().top, phoneAnchor.key) - phoneAnchor.offset) < 2, 'phone scroll position survives backfill');
       const texts = await page.locator('.ask-message-text').allTextContents();
       assert.equal(texts[0], 'Older mobile question?'); assert.equal(texts.at(-1), 'Later mobile answer.');
+      // A history backfill while the phone tab is closed must preserve the
+      // same visible message and offset when it reopens.
+      const hiddenAnchor = await page.evaluate(() => window.__askUI.chatPosition());
+      await page.locator('#tab-outline').click();
+      turns[1].activities = [{ id: 'hidden-tool', kind: 'tool', text: 'Earlier tool activity backfilled while reading', state: 'complete' }];
+      await poll();await page.locator('#ask-open').click();
+      await expect.poll(() => page.evaluate(() => window.__askUI.chatPosition().key)).toBe(hiddenAnchor.key);
+      assert(Math.abs((await page.evaluate(() => window.__askUI.chatPosition())).offset - hiddenAnchor.offset) < 2, 'hidden backfill preserves the phone anchor');
+      result.hiddenBackfillPosition = true;
       offline = true; await poll(); await expect(page.locator('.ask-message-user')).toHaveCount(16);
       turns.push({ id: 'offline-1', question: 'Missed while offline?', answer: 'Recovered answer one.', state: 'complete' },
         { id: 'offline-2', question: 'Another missed question?', answer: 'Recovered answer two.', state: 'complete' });

@@ -9,11 +9,11 @@ import { displayProbe } from './display-probe.mjs';
 
 process.env.PAGEBORNE_ASK_ORIGINS = 'https://unread.test';
 const out='test-results/ask-unread'; await mkdir(out,{recursive:true});
-const vite=await createServer({plugins:[displayProbe()],cacheDir:'.state/vite-ask-unread',server:{host:'127.0.0.1',port:0,hmr:false,watch:{usePolling:true}},clearScreen:false});await vite.listen();
+const vite=await createServer({plugins:[displayProbe()],cacheDir:'.state/vite-ask-unread',optimizeDeps:{entries:['index.html']},server:{host:'127.0.0.1',port:0,hmr:false,watch:null},clearScreen:false});await vite.listen();
 const results=[];
 try {
-  for(const engine of [chromium,webkit]) {
-    const browser=await engine.launch({headless:true,executablePath:engine===chromium?'/usr/bin/google-chrome':process.env.WEBKIT_PATH});
+  for(const engine of [chromium,webkit].filter(engine=>!process.env.ASK_BROWSER||engine.name()===process.env.ASK_BROWSER)) {
+    const browser=await engine.launch({headless:true,args:engine===chromium?['--disable-gpu']:[],executablePath:engine===chromium?(process.env.CHROME_PATH||'/usr/bin/google-chrome'):process.env.WEBKIT_PATH});
     const page=await browser.newPage({viewport:{width:440,height:806}});
     const result={engine:engine.name(),errors:[],passed:false};results.push(result);
     page.on('pageerror',e=>result.errors.push(e.message));
@@ -49,13 +49,14 @@ try {
         if(url.pathname==='/api/info')return json({provider:'codex'});
         if(url.pathname==='/api/events')return route.fulfill({headers,contentType:'text/event-stream',body:': connected\n\n'});
         if(url.pathname.endsWith('/history'))return json({history:[]});
-        if(url.pathname==='/api/pageborne/reader-state')return route.fulfill({status:404,headers,json:{}});
+        if(url.pathname.startsWith('/api/pageborne/'))return route.fulfill({status:404,headers,json:{}});
         if(url.pathname==='/api/messages')return json({state,messages});
         if(url.pathname==='/api/prompt'){prompts.push(req.postDataJSON());state='busy';messages.push({id:messages.length+1,type:'user_prompt',text:req.postDataJSON().text});return json({sessionId:'unread-fixture'});}
         throw Error(`Unexpected route ${url.pathname}`);
       });
       const emit=(text,complete=false)=>{messages.push({id:messages.length+1,type:complete?'result':'text_delta',text,...(complete?{success:true}:{})});if(complete)state='idle';};
       const body=()=>page.evaluate(()=>window.__body);
+      const settled=()=>expect.poll(()=>page.evaluate(()=>window.__askUI.session.status),{timeout:15000}).toBe('answer');
       const event=eventType=>page.evaluate(eventType=>window.dispatchEvent(new CustomEvent('evenHubEvent',{detail:{sysEvent:{eventType}}})),eventType);
       const openPaper=async name=>{await showLibrary(page);await page.locator(`[data-document-id="${name}.md"] .document-card`).click();await expect(page.locator('#bookmark')).toBeEnabled();await expect.poll(body).toMatch(new RegExp(`^${name}\\n`));};
       const answer=n=>Array.from({length:32},(_,i)=>`REPLY${n} Step ${i}. Explanation of this point.`).join('\n\n');
@@ -92,7 +93,7 @@ try {
       await ask('Explain the first part');emit(answer(1));
       await expect(page.locator('#ask-answer')).toContainText('REPLY1 Step 31.',{timeout:15000});assert.equal(await body(),reading);
       emit(answer(1),true);
-      await expect(page.locator('#ask-send')).toBeEnabled({timeout:15000});
+      await settled();
       assert.equal(await body(),reading,'completed replies never navigate automatically');
       await event(0);await expect.poll(body).toContain('REPLY1 Step 0.');
       assert(!(await body()).includes('Step 31.'),'manual opening must start at the unread beginning');
@@ -111,7 +112,7 @@ try {
       // frame must not count as read if the reader leaves before it arrives.
       await event(0);
       await ask('Explain the second part');emit(answer(2),true);await expect(page.locator('#ask-answer')).toContainText('REPLY2 Step 31.',{timeout:15000});
-      await expect(page.locator('#ask-send')).toBeEnabled();assert.equal(await body(),reading);
+      await settled();assert.equal(await body(),reading);
       await page.evaluate(()=>window.__holdDisplay=true);await event(0);await expect.poll(()=>page.evaluate(()=>!!window.__releaseDisplay)).toBe(true);
       await event(0);await page.evaluate(()=>window.__releaseDisplay());await expect.poll(body).toBe(reading);
       await event(0);await expect.poll(body).toContain('REPLY2 Step 0.');
@@ -127,7 +128,7 @@ try {
       await expect(page.locator('#ask-answer')).toContainText('REPLY3 Step 11.',{timeout:15000});await event(0);
       await expect.poll(body).toContain('REPLY3 Step 0.');await event(0);await expect.poll(body).toBe(reading);
       emit(answer(3).split('\n\n').slice(12).join('\n\n'));emit(answer(3),true);
-      await expect(page.locator('#ask-send')).toBeEnabled({timeout:15000});await event(0);
+      await settled();await event(0);
       await expect.poll(body).toContain('REPLY3');assert(!(await body()).includes('Step 0.'));assert(!(await body()).includes('Step 31.'));
       const held=await body();await page.waitForTimeout(1200);assert.equal(await body(),held,'arriving progress must not pull the unread page to the tail');
       result.streamingUnread=true;
@@ -143,20 +144,48 @@ try {
       await expect.poll(body).toBe(firstReply);
       await page.locator('#preview').screenshot({path:`${out}/${engine.name()}-open-reply-start.png`});
       await event(2);await expect.poll(body).not.toBe(firstReply);const chosen=await body();
-      emit(fourth,true);await expect(page.locator('#ask-send')).toBeEnabled({timeout:15000});
+      emit(fourth,true);await settled();
       await expect.poll(body).toBe(chosen);
       result.openReplyStart=result.streamingKeepsChosenPage=true;
       // Final-only responses behave the same, and manual scrolling while
       // waiting takes precedence over opening the beginning of a new reply.
       await finishReading();await ask('Explain the fifth part');emit(answer(5),true);
-      await expect(page.locator('#ask-send')).toBeEnabled({timeout:15000});
+      await settled();
       await expect.poll(body).toMatch(/^REPLY5 Step 0\./);
       await finishReading();await ask('Explain the sixth part');
       const waiting=await body();await event(1);await expect.poll(body).not.toBe(waiting);const scrolledBack=await body();
-      emit(answer(6),true);await expect(page.locator('#ask-send')).toBeEnabled({timeout:15000});
+      emit(answer(6),true);await settled();
       await expect.poll(body).toBe(scrolledBack);
       result.finalOnlyReplyStart=result.manualScrollWhileWaiting=true;
-      assert.equal(prompts.length,7);assert.deepEqual(await page.evaluate(()=>[...new Set(window.__footerColors)]),[4]);assert.deepEqual(await page.evaluate(()=>[...new Set(window.__commandColors)]),[1]);assert.deepEqual(result.errors,[]);result.passed=true;
+      // A follow-up asked partway through an answer must resume at that
+      // follow-up, not jump backward to the abandoned answer's unread tail.
+      await event(0); await expect.poll(body).toBe(reading); await event(0);
+      await expect.poll(body).toContain('REPLY6 Step 0.');
+      await ask('Explain the seventh part');
+      await event(0);await expect.poll(body).toBe(reading);
+      emit(answer(7),true);await expect(page.locator('#ask-answer')).toContainText('REPLY7 Step 31.',{timeout:15000});
+      await event(0);await expect.poll(body).toContain('REPLY7 Step 0.');
+      result.followupReturnStartsNewReply=true;
+      await ask('Explain the eighth part');await event(0);await expect.poll(body).toBe(reading);
+      await event(0);await expect.poll(body).toContain('Explain the eighth part');
+      const eighth=answer(8), partial=eighth.split('\n\n').slice(0,12).join('\n\n');
+      emit(partial);await expect.poll(body,{timeout:15000}).toContain('REPLY8 Step 0.');
+      await event(0);await expect.poll(body).toBe(reading);emit(eighth,true);await settled();
+      await event(0);await expect.poll(body).toContain('REPLY8');assert(!(await body()).includes('Step 0.'));
+      result.pendingFollowupReturn=result.partialFollowupReturn=true;
+      // Phone chat also follows its latest reply after being hidden. It must
+      // not retain the obsolete bottom offset from before that reply arrived.
+      await ask('Explain the ninth part');await page.waitForTimeout(100);
+      await page.locator('#tab-outline').click();emit(answer(9),true);await settled();
+      await page.locator('#ask-open').click();
+      const bottomGap=()=>page.locator('#ask-history').evaluate(el=>el.scrollHeight-el.clientHeight-el.scrollTop);
+      await expect.poll(bottomGap).toBeLessThan(2);
+      await page.locator('#ask-history').evaluate(el=>el.scrollTop=250);await page.waitForTimeout(100);
+      const top=await page.locator('#ask-history').evaluate(el=>el.scrollTop);
+      await page.locator('#tab-outline').click();await page.locator('#ask-open').click();
+      await expect.poll(()=>page.locator('#ask-history').evaluate(el=>el.scrollTop)).toBe(top);
+      result.phoneHiddenFollow=result.phoneScrollbackReturn=true;
+      assert.equal(prompts.length,10);assert.deepEqual(await page.evaluate(()=>[...new Set(window.__footerColors)]),[4]);assert.deepEqual(await page.evaluate(()=>[...new Set(window.__commandColors)]),[1]);assert.deepEqual(result.errors,[]);result.passed=true;
     } catch(e){result.failure=e.stack;await page.screenshot({path:`${out}/${engine.name()}-failure.png`}).catch(()=>{});}
     finally{await browser.close();console.log(JSON.stringify(result));}
   }

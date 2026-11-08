@@ -35,6 +35,8 @@ jobs:
           PAGE_TIME_BROWSER=chromium npm run test:page-time
           npm run test:display-recovery
           npm run test:sdk-timers
+          ASK_BROWSER=chromium npm run test:ask-unread
+          ASK_BROWSER=chromium npm run test:ask-sync
           npm run test:terminal-sessions
           LIBRARIAN_BROWSER=chromium npm run test:librarian
           npm run test:reading-history

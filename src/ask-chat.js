@@ -41,7 +41,7 @@ export class AskChat {
   }
   begin(key, question, context) {
     const id = crypto.randomUUID();
-    this.turns(key).push({ id, question, answer: '', readThrough: 0, state: 'pending', page: context.page, position: context.position });
+    this.turns(key).push({ id, question, answer: '', readThrough: 0, resumeFromHere: true, state: 'pending', page: context.page, position: context.position });
     this.persist(key); return id;
   }
   update(key, id, answer, state = 'pending') {

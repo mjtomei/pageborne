@@ -389,3 +389,29 @@ test('rewritten stream prefixes become unread again and stale display receipts a
   assert.equal(turns[0].readThrough,0);assert.equal(c.markRead(turns,frame.readReceipts),false);
   view=c.update(turns,view.y,'unread');assert.equal(view.y,0);
 });
+
+
+test('follow-up resume ignores earlier unread answers without changing their receipts', () => {
+  const turns = [1, 2].map(n => ({ id: `turn${n}`, question: `Question ${n}`, answer: Array.from({ length: 32 }, (_, i) => `Answer ${n} line ${i}. More explanation.`).join('\n\n'), readThrough: 0 }));
+  const c = new AskConversation(); let view = c.update(turns, 0, 'unread');
+  c.markRead(turns, c.window(view.y).readReceipts);
+  const earlierRead = turns[0].readThrough;
+  turns[1].resumeFromHere = true;
+  view = c.update(turns, view.y, 'unread');
+  assert.match(c.window(view.y).content, /^Answer 2 line 0/);
+  assert.equal(turns[0].readThrough, earlierRead);
+  c.markRead(turns, c.window(view.y).readReceipts);
+  view = c.update(turns, view.y, 'unread');
+  assert.match(c.window(view.y).content, /Answer 2/);
+  assert.doesNotMatch(c.window(view.y).content, /line 0/);
+  turns[1].readThrough = Infinity;
+  const chosen = c.move(view.y, -1);
+  assert.equal(c.update(turns, chosen, 'unread').y, chosen, 'no unread reply retains the chosen position');
+  const restored = new AskConversation();
+  const saved = structuredClone(turns);
+  saved[1].readThrough = 0;
+  const reopened = restored.update(saved, 0, 'unread');
+  assert.match(restored.window(reopened.y).content, /^Answer 2 line 0/, 'resume boundary survives a reopened conversation');
+  delete saved[1].resumeFromHere;
+  assert(restored.firstUnread(saved) < reopened.y, 'unmarked older replies stay eligible');
+});

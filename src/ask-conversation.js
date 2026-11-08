@@ -94,7 +94,12 @@ export class AskConversation {
     return this.resize(position, lines, focus === 'latest' || !!target || unread !== null);
   }
   firstUnread(turns) {
-    const through = new Map(turns.map(turn => [turn.id, turn.unreadDismissed ? Infinity : turn.readThrough ?? Infinity]));
+    // A new question moves the resume point to its reply. An unfinished older
+    // answer remains available, with its actual read receipts unchanged.
+    // Replies synced from another client don't move this boundary: several
+    // arriving together still open at the first unread one.
+    const start = Math.max(0, turns.findLastIndex(turn => turn.resumeFromHere));
+    const through = new Map(turns.slice(start).map(turn => [turn.id, turn.unreadDismissed ? Infinity : turn.readThrough ?? Infinity]));
     for (const message of this.messages) {
       if (message.role !== 'assistant') continue;
       const row = message.rows.findIndex(row => row.readEnd > through.get(message.turnId));

@@ -82,7 +82,10 @@ export class AskUI {
         event.preventDefault(); $('ask-form').requestSubmit();
       }
     };
-    const scrolled = () => { const el = $('ask-history'); this.chatFollowing = el.scrollHeight - el.clientHeight - el.scrollTop < 48; $('ask-latest').hidden = this.chatFollowing; };
+    const scrolled = () => {
+      if ($('ask-panel').hidden) return;
+      const el = $('ask-history'); this.chatFollowing = el.scrollHeight - el.clientHeight - el.scrollTop < 48; $('ask-latest').hidden = this.chatFollowing;
+    };
     $('ask-history').onscroll = scrolled;
     this.chatScrollbar = new ChatScrollbar($('ask-history'), $('ask-scrollbar'), $('ask-messages'), scrolled);
     $('ask-latest').onclick = () => { this.chatFollowing = true; this.scrollChat(); };
@@ -827,7 +830,9 @@ export class AskUI {
       if (reply !== this.observedReply && !s.savedReply) this.replyUnread = !this.glassesVisible;
       this.observedReply = reply;
     }
-    $('ask-panel').hidden = !s.active || !this.phoneVisible;
+    const panel = $('ask-panel'), wasHidden = panel.hidden, hide = !s.active || !this.phoneVisible;
+    if (!wasHidden && hide) this.hiddenChatView = { paperKey: this.paperKey, ...this.chatPosition() };
+    panel.hidden = hide;
     const input = $('ask-question'), mirror = $('ask-question-colors');
     const confidence = (s.review || ['starting', 'listening', 'transcribing'].includes(s.status)) && this.draftConfidence?.text === input.value ? this.draftConfidence : null;
     input.readOnly = ['starting', 'listening', 'transcribing'].includes(s.status);
@@ -895,6 +900,10 @@ export class AskUI {
     }
     this.session.syncConversation(this.chat.turns(this.paperKey));
     this.renderChat();
+    if (wasHidden && !hide) {
+      if (!this.chatFollowing && this.hiddenChatView?.paperKey === this.paperKey) this.restoreChatPosition(this.hiddenChatView);
+      this.hiddenChatView = null; this.scrollChat();
+    }
     $('ask-answer').setAttribute('aria-busy', String(s.status === 'thinking'));
     $('ask-send').disabled = !!this.unavailableReason || ['starting', 'listening', 'transcribing'].includes(s.status) || !!s.abort && !desktop || !!s.review && !s.review.text;
     $('ask-voice').disabled = !!this.unavailableReason || s.status === 'transcribing';
@@ -921,9 +930,20 @@ export class AskUI {
   scrollChat() {
     cancelAnimationFrame(this.chatScrollFrame);
     this.chatScrollFrame = requestAnimationFrame(() => {
-      if (!this.chatFollowing || !this.session.active || this.chatScrollbar.dragging) return;
+      if (!this.chatFollowing || !this.session.active || $('ask-panel').hidden || this.chatScrollbar.dragging) return;
       $('ask-history').scrollTop = $('ask-history').scrollHeight; $('ask-latest').hidden = true;
     });
+  }
+  chatPosition() {
+    const scroller = $('ask-history'), top = scroller.getBoundingClientRect().top;
+    const anchor = [...$('ask-messages').children].find(el => !el.hidden && el.getBoundingClientRect().bottom > top);
+    return { key: anchor?.dataset.key, offset: anchor ? anchor.getBoundingClientRect().top - top : 0, top: scroller.scrollTop };
+  }
+  restoreChatPosition(view) {
+    const scroller = $('ask-history');
+    const anchor = view?.key && [...$('ask-messages').children].find(el => el.dataset.key === view.key);
+    if (anchor) scroller.scrollTop += anchor.getBoundingClientRect().top - scroller.getBoundingClientRect().top - view.offset;
+    else if (view) scroller.scrollTop = view.top;
   }
   // Completed answers can be copied, or take the reader back to where the
   // question was asked. The position is the one recorded with the turn.
@@ -956,9 +976,7 @@ export class AskUI {
     const signature = JSON.stringify(turns);
     if (this.renderedChatKey === this.paperKey && this.renderedChat === signature) return;
     if (this.renderedChatKey !== this.paperKey) { list.replaceChildren(); this.chatFollowing = true; }
-    const scroller = $('ask-history'), top = scroller.getBoundingClientRect().top;
-    const anchor = this.chatFollowing ? null : [...list.children].find(el => !el.hidden && el.getBoundingClientRect().bottom > top);
-    const anchorOffset = anchor?.getBoundingClientRect().top;
+    const anchor = this.chatFollowing || $('ask-panel').hidden ? null : this.chatPosition();
     this.renderedChatKey = this.paperKey; this.renderedChat = signature;
     const keep = new Set();
     $('ask-answer')?.removeAttribute('id');
@@ -993,7 +1011,7 @@ export class AskUI {
     $('ask-empty').hidden = turns.length > 0;
     if (this.chatFollowing) this.scrollChat();
     else {
-      if (anchor?.isConnected) scroller.scrollTop += anchor.getBoundingClientRect().top - anchorOffset;
+      this.restoreChatPosition(anchor);
       $('ask-latest').hidden = false;
     }
   }
