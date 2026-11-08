@@ -49,7 +49,7 @@ try {
       } };
     }, { endpoint, mode });
     const page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
-    await page.goto(server.resolvedUrls.local[0]); await showLibrary(page);
+    await page.goto(server.resolvedUrls.local[0]);
     const row = page.locator('[data-document-id="book.md"]'); await expect(row).toBeVisible({ timeout: 20000 });
     await expect(page.locator('#library-sync')).toBeEnabled();
     assert(!requests.some(r => r.path.endsWith('/library/read')), 'catalog must not eagerly download bodies');
@@ -69,7 +69,8 @@ try {
     await page.screenshot({ path: `${out}/${mode}.png` });
     if (mode === 'ok') {
       offline = true; const reads = requests.filter(r => r.path.endsWith('/library/read')).length;
-      await page.reload(); await showLibrary(page); await expect(row).toBeVisible();
+      await page.reload(); await expect(page.locator('#bookmark')).toBeEnabled();
+      await showLibrary(page); await expect(row).toBeVisible();
       await row.locator('.document-card').tap(); await expect(page.locator('#bookmark')).toBeEnabled();
       assert.equal(requests.filter(r => r.path.endsWith('/library/read')).length, reads, 'offline reopen uses saved bytes');
     }
