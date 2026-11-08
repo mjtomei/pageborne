@@ -3,7 +3,7 @@ import { chromium, expect } from '@playwright/test';
 import { createServer } from 'vite';
 import { mkdir, writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
-import { PhoneLibrary, AtomicPhoneValue } from '../src/phone-storage.js';
+import { PhoneLibrary, AtomicPhoneValue, STORAGE_PREFIX } from '../src/phone-storage.js';
 import { PdfPreparationCache } from '../src/pdf-cache.js';
 import { phoneReadingStorage } from '../src/reading-storage.js';
 import { readLocalFile } from '../src/library.js';
@@ -51,14 +51,19 @@ await context.route('**/api/**', async route => {
 });
 await context.exposeFunction('__storage', ({ method, data }) => {
   if (method === 'getLocalStorage') return kv.get(data.key);
-  if (data.value && (rejectNonempty || usage() - (values.get(data.key)?.length || 0) + data.value.length > quota)) { report.nativeWriteRejections++; return false; }
+  // Isolate the deletion transaction. A separate rejected position save now
+  // deliberately makes the whole library read-only until storage recovers.
+  const libraryWrite = data.key.startsWith(`${STORAGE_PREFIX}:library`) || data.key === `${STORAGE_PREFIX}:pending`;
+  if (libraryWrite && data.value && (rejectNonempty || usage() - (values.get(data.key)?.length || 0) + data.value.length > quota)) { report.nativeWriteRejections++; return false; }
   values.set(data.key, data.value); return true;
 });
 await context.addInitScript(() => {
   window.flutter_inappwebview = { async callHandler(_, payload) {
     const message = JSON.parse(payload);
     if (message.method.endsWith('LocalStorage')) return window.__storage(message);
-    // Match the user's separate native display rejection. Library still works.
+    // Keep both startup and its recovery rejected: this checks that a genuine
+    // display failure still leaves the library usable.
+    if (message.method === 'rebuildPageContainer') return false;
     return message.method === 'createStartUpPageContainer' ? 1 : message.method === 'updateImageRawData' ? 0 : true;
   } };
 });

@@ -539,6 +539,9 @@ function renderDeleteStatus() {
 }
 function renderLibrary() {
   renderLibraryEstimates(); renderLibraryAvailability();
+  // Cache recovery can refresh the catalog during a deletion. Keep its touch
+  // target mounted until the transaction finishes or the user can retry it.
+  if (deleting && deleteId) { renderDeleteStatus(); return; }
   $('documents').replaceChildren();
   $('doc-count').textContent = String(snapshot?.documents.length || 0);
   if (!snapshot?.documents.length) return empty($('documents'), 'No documents yet.');
