@@ -66,7 +66,7 @@ try {
       assert(['claude', 'codex'].includes(url.searchParams.get('provider')));
       const json = body => route.fulfill({ headers, json: body });
       if (url.pathname === '/api/events') return route.fulfill({ headers, contentType: 'text/event-stream', body: ':connected\n\n' });
-      if (url.pathname === '/api/pageborne/reader-state') return route.fulfill({ status: 404, headers, json: {} });
+      if (['/api/pageborne/reader-state', '/api/pageborne/library', '/api/pageborne/reading-activity'].includes(url.pathname)) return route.fulfill({ status: 404, headers, json: {} });
       if (url.pathname === '/api/info') return json({ provider: config.agent });
       if (url.pathname.endsWith('/history')) return json({ history: [] });
       if (url.pathname === '/api/messages') return json({ state: 'idle', messages: (sessions.get(url.searchParams.get('sessionId')) || []).filter(m => m.id > Number(url.searchParams.get('after') || 0)) });
@@ -139,6 +139,9 @@ try {
     }
     await page.locator('#ask-open').click();
     await expect(page.locator('#ask-chat-model')).toBeVisible();
+    await expect(page.locator('#ask-chat-model option[value=claude]')).toHaveText('Claude Fable 5.2');
+    await expect(page.locator('#ask-default-model option[value=claude]')).toHaveText('Claude Fable 5.2');
+    await expect(page.locator('#ask-session-model')).toBeVisible();
     const otherAgent = config.agent === 'claude' ? 'codex' : 'claude';
     await page.locator('#ask-chat-model').selectOption(otherAgent);
     await expect(page.locator('.ask-message-user')).toHaveCount(0);

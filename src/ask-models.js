@@ -2,6 +2,9 @@ import { connectionMode, paperConnectionKey } from './ask-connections.js';
 import { librarianConnectionKey } from './librarian.js';
 
 export const ASK_AGENTS = ['claude', 'codex'];
+export const LATEST_CLAUDE_LABEL = 'Claude Fable 5.2';
+export const sessionModelName = model => typeof model === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(model)
+  ? model.replace(/^claude-fable-(\d+)-(\d+)(?:-\d{8})?$/, 'Fable $1.$2') : '';
 export const askScopeKey = paperId => JSON.stringify(paperId == null ? [null, 'librarian'] : [paperId]);
 export const askChatKey = (config, paperId) => paperId == null ? librarianConnectionKey(config) : paperConnectionKey(config, paperId);
 export const defaultAskAgent = (config, choices) => ASK_AGENTS.includes(choices?.defaultAgent) ? choices.defaultAgent

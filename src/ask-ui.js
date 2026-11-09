@@ -18,7 +18,7 @@ import { AskKeyboard } from './ask-keyboard.js';
 import { AskPhoneReadingView } from './ask-reading-view.js';
 import { ChatScrollbar } from './chat-scrollbar.js';
 import { MAX_QUESTION_CHARS } from './ask-limits.js';
-import { ASK_AGENTS, askScopeKey, askChatKey, defaultAskAgent, retainAskModels, askConfigFor } from './ask-models.js';
+import { ASK_AGENTS, LATEST_CLAUDE_LABEL, sessionModelName, askScopeKey, askChatKey, defaultAskAgent, retainAskModels, askConfigFor } from './ask-models.js';
 import { safeTimeout as setTimeout, cancelTimeout as clearTimeout } from './timers.js';
 
 const $ = id => document.getElementById(id);
@@ -30,6 +30,7 @@ export class AskUI {
     this.deliveries = new Map();
     this.replyViews = new Map();
     this.modelDrafts = new Map();
+    this.sessionModels = new Map();
     this.bindingVersion = 0; this.linkVersions = new Map();
     this.session = new AskSession(() => { this.render(); changed(); });
     const limit = () => this.release();
@@ -95,7 +96,7 @@ export class AskUI {
       this.retainModels();
       this.saveModels({ ...this.readModels(), defaultAgent: $('ask-default-model').value });
     };
-    $('ask-config-clear').onclick = () => { this.cancelPairing(); this.close(); this.bindingVersion++; for (const delivery of this.deliveries.values()) delivery.abort.abort(); this.deliveries.clear(); this.chat.clear(); this.replyViews.clear(); this.modelDrafts.clear(); saveConfig({}); saveBindings({}); this.load(); $('ask-config-status').textContent = 'Connection and local session links forgotten. Desktop conversations are kept.'; };
+    $('ask-config-clear').onclick = () => { this.cancelPairing(); this.close(); this.bindingVersion++; for (const delivery of this.deliveries.values()) delivery.abort.abort(); this.deliveries.clear(); this.chat.clear(); this.replyViews.clear(); this.modelDrafts.clear(); this.sessionModels.clear(); saveConfig({}); saveBindings({}); this.load(); $('ask-config-status').textContent = 'Connection and local session links forgotten. Desktop conversations are kept.'; };
     $('ask-settings-link').onclick = () => showSettings();
     $('ask-mode').onchange = () => { this.cancelPairing(); this.fields(); };
     $('ask-pairing-use').onclick = () => this.importPairing($('ask-pairing-url').value);
@@ -201,7 +202,7 @@ export class AskUI {
     const config = this.readConfig();
     $('ask-model-settings').hidden = connectionMode(config) !== 'terminal';
     $('ask-default-model').value = defaultAskAgent(config, this.readModels());
-    for (const id of ['ask-default-model', 'ask-chat-model']) $(id).querySelector('[value="claude"]').textContent = this.automaticConnection ? 'Claude Fable 5.1' : 'Claude';
+    for (const id of ['ask-default-model', 'ask-chat-model']) $(id).querySelector('[value="claude"]').textContent = this.automaticConnection ? LATEST_CLAUDE_LABEL : 'Claude';
   }
   configFor(paperId) { return askConfigFor(this.readConfig(), this.readModels(), paperId); }
   currentConfig() { return this.session.active ? this.config : this.configFor(this.snapshot().paperId); }
@@ -506,10 +507,27 @@ export class AskUI {
     if (this.session.active && this.paperKey === key && this.session.status === 'answer' && this.glassesVisible) this.acknowledgeReply();
   }
   binding() { return this.readBindings()[this.paperKey] || {}; }
+  receiveSessionModel(key, conversation) {
+    if (this.readBindings()[key]?.sessionId !== conversation.sessionId) return;
+    this.sessionModels.set(key, { sessionId: conversation.sessionId, name: sessionModelName(conversation.sessionModel) });
+    if (this.session.active && this.paperKey === key) this.renderSessionModel();
+  }
+  renderSessionModel() {
+    const binding = this.binding(), observed = this.sessionModels.get(this.paperKey);
+    let label;
+    if (connectionMode(this.config) !== 'terminal') label = `Model: ${this.config.model || 'Not configured'}`;
+    else if (binding.sessionId) label = observed?.sessionId === binding.sessionId
+      ? observed.name ? `Session model: ${observed.name}` : 'Session model unavailable'
+      : 'Session model: checking…';
+    else label = this.automaticConnection && this.config.agent === 'claude'
+      ? `New sessions: ${LATEST_CLAUDE_LABEL}` : 'New session model is set on the desktop';
+    $('ask-session-model').textContent = label;
+  }
   replyClient(key, config, signal) {
     const version = this.bindingVersion, linkVersion = this.linkVersions.get(key);
     return new EvenTerminal(config, { ...this.options(), onConversation: conversation => {
       if (signal.aborted || version !== this.bindingVersion || linkVersion !== this.linkVersions.get(key) || this.readBindings()[key]?.sessionId !== conversation.sessionId) return;
+      this.receiveSessionModel(key, conversation);
       this.chat.mergeConversation(key, conversation.sessionId, conversation.turns);
       if (this.session.active && this.paperKey === key) { this.session.history = this.chat.history(key); this.render(); this.changed(); }
     } });
@@ -526,6 +544,7 @@ export class AskUI {
       this.linkVersions.set(key, (this.linkVersions.get(key) || 0) + 1); this.saveBinding(key, null); this.chat.forget(key);
       this.replyViews.delete(key);
       this.modelDrafts.delete(key);
+      this.sessionModels.delete(key);
     }
     const choices = this.readModels(), selections = { ...choices.selections }; delete selections[askScopeKey(paperId)];
     this.saveModels({ ...choices, selections });
@@ -602,6 +621,7 @@ export class AskUI {
         const conversation = await client.conversation(binding);
         if (this.currentPaperKey() !== key || this.readBindings()[key] !== binding) return;
         if (conversation) {
+          this.receiveSessionModel(key, conversation);
           this.footerConnection = { key, sessionId: binding.sessionId, failures: 0 };
           const baseline = binding.conversationSyncVersion !== 2;
           const cachedId = this.chat.reconcile(key, binding);
@@ -855,6 +875,7 @@ export class AskUI {
     $('ask-chat-model-field').hidden = !desktop || this.terminalSession;
     $('ask-chat-model').value = this.config.agent || '';
     $('ask-chat-model').disabled = this.terminalSession || !!s.dialog();
+    this.renderSessionModel();
     const librarian = this.librarian, terminalSession = this.terminalSession;
     document.querySelector('.ask-title-label').textContent = terminalSession ? 'Even Terminal' : librarian ? 'Librarian' : 'Ask';
     $('ask-panel').setAttribute('aria-label', terminalSession ? 'Even Terminal session' : librarian ? 'Librarian' : 'Ask about this');

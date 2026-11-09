@@ -72,7 +72,11 @@ export function installConversationSync(router, getProvider) {
       const provider = getProvider(req.query.provider, id);
       if (!conversationCapabilities(provider).conversationSync) return res.status(404).json({ error: 'Conversation sync unavailable.' });
       const turns = conversationTurns(await provider.getConversation(id));
-      res.json({ version: 1, sessionId: id, turns, state: provider.getStatus(id)?.state || 'idle' });
+      // Optional metadata must never prevent transcript recovery. Do not use
+      // getInfo().model: that is the default for new sessions, not this owner.
+      const model = await Promise.resolve().then(() => provider.getSessionModel?.(id)).catch(() => null);
+      const sessionModel = typeof model === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(model) ? model : null;
+      res.json({ version: 1, sessionId: id, turns, sessionModel, state: provider.getStatus(id)?.state || 'idle' });
     } catch (error) { res.status(error.statusCode || 502).json({ error: 'Could not load the shared conversation.' }); }
   });
 }

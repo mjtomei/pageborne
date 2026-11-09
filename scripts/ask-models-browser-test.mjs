@@ -7,18 +7,18 @@ import { displayProbe } from './display-probe.mjs';
 
 process.env.PAGEBORNE_ASK_ORIGINS = 'https://models.test';
 const out = 'test-results/ask-models'; await mkdir(out, { recursive: true });
-const vite = await createServer({ plugins: [displayProbe()], cacheDir: '.state/vite-ask-models', server: { host: '127.0.0.1', port: 0, hmr: false }, clearScreen: false });
+const vite = await createServer({ plugins: [displayProbe()], cacheDir: '.state/vite-ask-models', optimizeDeps: { entries: ['index.html'] }, server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, clearScreen: false });
 await vite.listen(); const results = [];
 try {
-  for (const engine of [chromium, webkit]) {
-    const browser = await engine.launch({ headless: true, executablePath: engine === chromium ? '/usr/bin/google-chrome' : process.env.WEBKIT_PATH });
+  for (const engine of [chromium, webkit].filter(engine => !process.env.ASK_BROWSER || engine.name() === process.env.ASK_BROWSER)) {
+    const browser = await engine.launch({ headless: true, args: engine === chromium ? ['--disable-gpu'] : [], executablePath: engine === chromium ? process.env.CHROME_PATH || '/usr/bin/google-chrome' : process.env.WEBKIT_PATH });
     const page = await browser.newPage({ viewport: { width: 440, height: 806 } });
     const result = { browser: engine.name(), errors: [], passed: false }; results.push(result);
     const storage = new Map(), sessions = new Map(), prompts = [], requests = [];
     let serial = 0, delayed, holdSubmission, finishSubmission;
     page.on('pageerror', error => result.errors.push(error.message));
     const session = (id, agent) => {
-      if (!sessions.has(id)) sessions.set(id, { agent, messages: [], turns: [] });
+      if (!sessions.has(id)) sessions.set(id, { agent, model: agent === 'claude' ? 'claude-fable-5-1' : 'gpt-6-astra', messages: [], turns: [] });
       const saved = sessions.get(id); assert.equal(saved.agent, agent, 'session is only used with its original provider'); return saved;
     };
     try {
@@ -47,7 +47,7 @@ try {
         if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
         requests.push({ path: url.pathname, agent, sessionId: url.searchParams.get('sessionId') });
         const json = value => route.fulfill({ headers, json: value });
-        if (url.pathname === '/api/pageborne/reader-state') return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
+        if (['/api/pageborne/reader-state', '/api/pageborne/library', '/api/pageborne/reading-activity'].includes(url.pathname)) return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
         if (url.pathname === '/api/info') return json({ pageborne: { conversationSync: 1 } });
         if (/^\/api\/sessions\/[^/]+\/history$/.test(url.pathname)) {
           session(decodeURIComponent(url.pathname.split('/')[3]), agent); return json({ history: [] });
@@ -58,7 +58,7 @@ try {
         }
         if (url.pathname === '/api/pageborne/conversation') {
           const saved = session(url.searchParams.get('sessionId'), agent);
-          const response = { version: 1, sessionId: url.searchParams.get('sessionId'), state: 'idle', turns: structuredClone(saved.turns) };
+          const response = { version: 1, sessionId: url.searchParams.get('sessionId'), state: 'idle', sessionModel: saved.model, turns: structuredClone(saved.turns) };
           if (delayed) { const wait = delayed; delayed = null; await wait; }
           return json(response);
         }
@@ -94,6 +94,9 @@ try {
       await showTool(page, 'settings'); await page.locator('#ask-default-model').selectOption('claude'); await hideSettings(page);
       await page.locator('#ask-open').click(); await poll();
       await expect(page.locator('#ask-chat-model')).toHaveValue('codex'); await expect(page.locator('#ask-messages')).toContainText('Legacy Codex question');
+      await expect(page.locator('#ask-session-model')).toHaveText('Session model: gpt-6-astra');
+      await page.evaluate(() => { window.__askUI.automaticConnection = true; window.__askUI.loadModels(); });
+      await expect(page.locator('#ask-chat-model option[value=claude]')).toHaveText('Claude Fable 5.2');
       const codexKey = await getKey();
       await page.locator('#ask-question').fill('Codex unsent draft'); await select('claude');
       const claudeKey = await getKey(); assert.notEqual(claudeKey, codexKey);
@@ -101,6 +104,12 @@ try {
       await page.locator('#ask-question').fill('claude followup'); await page.locator('#ask-send').click();
       await expect(page.locator('#ask-answer')).toContainText('claude reply 1.'); await poll();
       const claudeId = await page.evaluate(() => window.__askUI.binding().sessionId);
+      await expect(page.locator('#ask-session-model')).toHaveText('Session model: Fable 5.1');
+      session(claudeId, 'claude').model = 'claude-fable-5-2'; await poll();
+      await expect(page.locator('#ask-session-model')).toHaveText('Session model: Fable 5.2');
+      delete session(claudeId, 'claude').model; await poll();
+      await expect(page.locator('#ask-session-model')).toHaveText('Session model unavailable');
+      session(claudeId, 'claude').model = 'claude-fable-5-2'; await poll();
       await page.locator('#ask-question').fill('Claude unsent draft'); await select('codex');
       await expect(page.locator('#ask-question')).toHaveValue('Codex unsent draft'); await expect(page.locator('#ask-messages')).toContainText('Legacy Codex question');
       assert.notEqual(await page.evaluate(() => window.__askUI.footerStatus()), 'Unread reply', 'the other model cannot leak its unread flag');
@@ -135,6 +144,7 @@ try {
       // Late sync responses cannot replace the newly selected model's messages.
       let release; delayed = new Promise(resolve => { release = resolve; }); const late = poll(); await expect.poll(() => delayed === null).toBe(true);
       await select('codex'); release(); await late; await expect(page.locator('#ask-messages')).not.toContainText('External Claude question');
+      await expect(page.locator('#ask-session-model')).toHaveText('Session model: gpt-6-astra');
       await page.screenshot({ path: `${out}/${engine.name()}.png`, fullPage: true });
       const saved = JSON.parse(await page.evaluate(() => localStorage.getItem('even-reader:preferences:v1')));
       assert.equal(saved.askModels.defaultAgent, 'codex'); assert(saved.askChats[codexKey].length >= 2); assert(saved.askChats[claudeKey].length >= 3);

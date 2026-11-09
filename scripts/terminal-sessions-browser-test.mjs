@@ -9,7 +9,7 @@ import { showLibrary } from './ui-helpers.mjs';
 const out = 'test-results/terminal-sessions'; await mkdir(out, { recursive: true });
 const vite = await createServer({ mode: 'release', plugins: [displayProbe(), { name: 'session-speech-fixture', transform(code, id) {
   if (id.endsWith('/src/speech-setup.js')) return code.replace('start(initialize) {', 'start(initialize) { this.blocked = false; return Promise.resolve();');
-} }], cacheDir: '.state/vite-terminal-sessions', server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, clearScreen: false });
+} }], cacheDir: '.state/vite-terminal-sessions', optimizeDeps: { entries: ['index.html'] }, server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, clearScreen: false });
 await vite.listen();
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true, args: ['--disable-gpu', '--js-flags=--max-old-space-size=384'] });
 const report = { passed: false, errors: [], physicalGlasses: false }, prompts = [], lists = [], conversations = new Map(), storage = new Map();
@@ -49,7 +49,7 @@ try {
       if (provider === 'claude' && failClaude) { await route.fulfill({ status: 503, body: '' }); return; }
       result = { sessions: Array.from({ length: provider === 'claude' ? 27 : 44 }, (_, i) => ({ id: `session-${i}`, title: `${provider} work ${i}`, timestamp: new Date(1700000000000+i*2000+(provider === 'codex' ? 1000 : 0)).toISOString(), status: 'idle' })) };
     } else if (u.pathname === '/api/info') result = { provider, pageborne: { conversationSync: 1, documents: 1 } };
-    else if (u.pathname === '/api/pageborne/conversation') result = { version: 1, sessionId: id, state: 'idle', turns: turns(provider, id) };
+    else if (u.pathname === '/api/pageborne/conversation') result = { version: 1, sessionId: id, state: 'idle', sessionModel: provider === 'claude' ? 'claude-fable-5-1' : 'gpt-6-astra', turns: turns(provider, id) };
     else if (u.pathname.endsWith('/history')) result = { history: [] };
     else if (u.pathname === '/api/messages') result = { state: 'idle', messages: turns(provider, id).flatMap((t, i) => [{ id: i*2+1, type: 'user_prompt', text: t.raw || t.question }, { id: i*2+2, type: 'result', success: true, text: t.answer }]) };
     else if (u.pathname === '/api/prompt') {
@@ -110,6 +110,7 @@ try {
   assert.equal(prompts[0].sessionId,'session-20'); assert.equal(prompts[0].provider,'codex');
   assert.deepEqual(Object.keys(prompts[0]).sort(),['provider','sessionId','text']); assert(!prompts[0].text.includes('Reading context'));
   await expect(page.locator('#ask-history')).toContainText('Update todo.txt and agents.md.');
+  await expect(page.locator('#ask-session-model')).toHaveText('Session model: gpt-6-astra');
   await page.locator('#ask-question').fill('Draft for Codex');
   await gesture(0); await expect.poll(selected).toBe('Codex · codex work 20');
   await selectSession('claude','session-20');
@@ -151,6 +152,7 @@ try {
   await boot(); await menu(7); await expect.poll(selected).toBe('Paper'); await gesture(1); await gesture(0);
   await expect.poll(body).toContain('71 sessions'); await selectSession('codex','session-20');
   await expect(page.locator('#ask-history')).toContainText('Update todo.txt and agents.md.');
+  await expect(page.locator('#ask-session-model')).toHaveText('Session model: gpt-6-astra');
   assert.equal(prompts.length,1,'no replay on switching or reload');
   await gesture(0); await expect.poll(selected).toBe('Codex · codex work 20');
   await page.evaluate(()=>{const ui=window.__askUI;ui.saveConfig({...ui.readConfig(),token:'other-fixture'});});

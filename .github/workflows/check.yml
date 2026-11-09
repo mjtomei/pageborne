@@ -37,6 +37,7 @@ jobs:
           npm run test:sdk-timers
           ASK_BROWSER=chromium npm run test:ask-unread
           ASK_BROWSER=chromium npm run test:ask-sync
+          ASK_BROWSER=chromium npm run test:ask-models
           npm run test:terminal-sessions
           LIBRARIAN_BROWSER=chromium npm run test:librarian
           npm run test:reading-history

@@ -148,3 +148,18 @@ test('history accepts optional command detail and keeps compatibility with summa
   action.detail = {}; await assert.rejects(client.conversation({ sessionId: 's' }), /invalid activity/);
   action.detail = 'x'.repeat(1001); await assert.rejects(client.conversation({ sessionId: 's' }), /invalid activity/);
 });
+
+test('session model metadata is scoped, optional and cannot break shared history', async () => {
+  let handler, model = 'claude-fable-5-1', fail = false;
+  const provider = { getConversation: async () => [], getStatus: () => ({ state: 'idle' }),
+    getInfo: () => { throw new Error('Never use new-session default'); },
+    getSessionModel: async id => { assert.equal(id, 'owner'); if (fail) throw Error('metadata unavailable'); return model; } };
+  installConversationSync({ get(_, fn) { handler = fn; } }, () => provider);
+  const call = async () => { let result; await handler({ query: { sessionId: 'owner' } }, { json(value) { result = value; } }); return result; };
+  assert.equal((await call()).sessionModel, 'claude-fable-5-1');
+  model = 'claude-fable-5-2'; assert.equal((await call()).sessionModel, model);
+  model = 'gpt-6-astra'; assert.equal((await call()).sessionModel, model);
+  model = {}; assert.equal((await call()).sessionModel, null);
+  fail = true; assert.deepEqual((await call()).turns, []); assert.equal((await call()).sessionModel, null);
+  delete provider.getSessionModel; assert.equal((await call()).sessionModel, null);
+});

@@ -476,6 +476,7 @@ input[type=checkbox][role=switch]:disabled{opacity:.42}
 .ask-panel[data-keyboard="true"] #ask-question { max-height:min(120px,calc(var(--chat-height) * .28)); }
 .ask-head { padding:8px 12px; border-bottom:1px solid var(--line-soft); min-width:0; }
 .ask-model-choice { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:calc(12px * var(--app-text-scale,1)); }
+.ask-session-model { margin:4px 0 0; font-size:calc(12px * var(--app-text-scale,1)); overflow-wrap:anywhere; }
 .ask-model-choice select { min-width:0; max-width:100%; min-height:36px; padding:4px 8px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); font:inherit; }
 .ask-head .tool-panel-head { margin:0; gap:8px; }
 .ask-head-actions { display:flex; align-items:center; gap:8px; flex:none; }
