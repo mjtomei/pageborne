@@ -293,6 +293,8 @@ try {
       await expect(page.locator('#library-clearance-ratio')).toHaveText('Additions / clearance: 0.50');
       for (const width of [320, 440]) {
         await page.setViewportSize({ width, height: 806 });
+        await showLibrary(page);
+        await page.waitForFunction(() => { const r = document.querySelector('#library-panel').getBoundingClientRect(); return r.left >= -1 && r.right <= innerWidth + 1; });
         await expect(page.locator('#library-clearance-days')).toBeVisible();
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         await page.screenshot({ path: `test-results/reading-activity/${mode}-clearance-known-${width}.png` });
