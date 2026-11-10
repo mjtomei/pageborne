@@ -59,6 +59,11 @@ try {
       turns(provider, body.sessionId).push({ id: `new-${prompts.length}`, question: body.text, raw: body.text, answer: `Reply ${prompts.length}`, state: 'complete' });
       result = { sessionId: body.sessionId };
     } else if (u.pathname === '/api/events') { await route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' }); return; }
+    else if (u.pathname === '/api/pageborne/library/activity' && route.request().method() === 'GET') {
+      // This terminal-only fixture has no library activity service. Background
+      // clearance refreshes must tolerate an older desktop without that route.
+      await route.fulfill({ status: 404, body: '' }); return;
+    }
     else if (['/api/pageborne/reader-state', '/api/pageborne/reading-activity'].includes(u.pathname)) { await route.fulfill({ status: 404, body: '' }); return; }
     else throw new Error('Unexpected API '+u.pathname);
     await route.fulfill({ json: result });
