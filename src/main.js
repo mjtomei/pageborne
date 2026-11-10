@@ -24,6 +24,7 @@ import { speedTitleBitmap } from './speed-title.js';
 import { pdfSettingsFor, normalizePdfSettings, usePdfDefaults, forgetPdfSettings } from './pdf-settings.js';
 import { GlassesDisplay, paintFrame } from './glasses.js';
 import { LocalLibrary } from './library.js';
+import { libraryClearance, validLibraryActivity } from './library-clearance.js';
 import { syncLibrary, desktopLibrary, preparedWordUpdates, downloadCatalogDocument } from './library-sync.js';
 import { EvenTerminal } from './ask-terminal.js';
 import { connectionMode } from './ask-connections.js';
@@ -273,7 +274,7 @@ const readingSync = new ReadingSync({
   client: () => libraryReady && connectionMode(readerConnection()) === 'terminal' ? new EvenTerminal(readerConnection(), askUI.options()) : null,
   changed: () => readingHistory.render(),
 });
-const syncReading = async () => { await readingLog?.flush().catch(readingSaveError); await sharedReader.sync(); await readingSync.sync(); };
+const syncReading = async () => { await readingLog?.flush().catch(readingSaveError); await sharedReader.sync(); await readingSync.sync(); await refreshLibraryActivity(); };
 syncReading.status = () => readingSync.status;
 const readingHistory = new ReadingHistoryUI({
   log: () => readingLog, sync: syncReading, sessions: readingSessions,
@@ -614,6 +615,19 @@ function renderLibraryEstimates() {
   }
   const total = libraryReadingEstimate(documents, average);
   $('library-reading-time').textContent = `${total.duration}${total.unknown && total.duration !== '—' ? '+' : ''}`;
+  const config = readerConnection(), activity = snapshot?.libraryActivity?.endpoint === config.endpoint ? snapshot.libraryActivity : null;
+  const clearance = libraryClearance({ documents, entries: readingLog?.entries, activity,
+    removals: snapshot?.libraryRemovals, scope: config.chatScope || '', endpoint: config.endpoint });
+  $('library-clearance-days').textContent = clearance.days == null ? '— days' : `${clearance.days === 0 ? '0' : '~' + Math.max(1, Math.ceil(clearance.days)).toLocaleString()} days`;
+  const ratio = clearance.ratio == null ? clearance.available && clearance.addedWords > 0 && !clearance.clearedWords
+    && !clearance.missingAdded && !clearance.missingDeleted ? 'no clearance yet' : '—' : clearance.ratio.toFixed(2);
+  $('library-clearance-ratio').textContent = `Additions / clearance: ${ratio}`;
+  $('library-clearance-rate').textContent = clearance.available
+    ? `${Math.round(clearance.wordsPerDay).toLocaleString()} words cleared/day · last 14 days${clearance.preliminary ? ' · preliminary' : ''}${clearance.pending ? ' · deletions pending sync' : ''}`
+    : 'Sync to load library clearance history.';
+  $('library-clearance-detail').textContent = `Last 14 days: ${Math.round(clearance.readWords).toLocaleString()} words read from texts not deleted, plus ${clearance.deletedWords.toLocaleString()} words in deleted texts. ${clearance.addedWords.toLocaleString()} words added.`
+    + (clearance.missingAdded + clearance.missingDeleted + clearance.missingCurrent ? ' Some word counts are missing; affected estimates are unavailable.' : '')
+    + (activity && clearance.preliminary ? ` Deletion tracking began ${new Date(activity.startedAt).toLocaleDateString()}; earlier deletions are unavailable. The daily rate always divides by 14 while history builds up.` : '');
   $('library-reading-speed').textContent = readingSpeedLabel(average);
   const combined = averageReadingSpeed(readingLog?.entries, { includeAsk: true });
   $('library-reading-combined-speed').textContent = `Including Ask: ${combined == null ? 'no reading logged yet' : `${Math.round(combined).toLocaleString()} wpm`}`;
@@ -644,6 +658,35 @@ async function refreshReadingCounts() {
     .finally(() => { readingCountsRefresh = null; renderLibraryEstimates(); });
   renderLibraryEstimates();
   return readingCountsRefresh;
+}
+let libraryActivityRefresh = null;
+async function refreshLibraryActivity(force = false) {
+  if (!libraryReady || libraryActivityRefresh || libraryBusy && !force) return;
+  const config = readerConnection(), target = store;
+  if (connectionMode(config) !== 'terminal' || !config.endpoint) return;
+  libraryActivityRefresh = (async () => {
+    const client = new EvenTerminal(config, askUI.options());
+    let activity = await client.api('pageborne/library/activity');
+    if (!validLibraryActivity(activity)) throw Error('Invalid library activity.');
+    if (target !== store || readerConnection().endpoint !== config.endpoint) return;
+    const removals = (snapshot.libraryRemovals || []).filter(event => (!event.endpoint || event.endpoint === config.endpoint)
+      && (!event.libraryId || event.libraryId === activity.libraryId)
+      && !activity.events.some(saved => saved.operationId === event.id));
+    for (let offset = 0; offset < removals.length; offset += 1000) {
+      activity = await client.api('pageborne/library/activity', { body: { removals: removals.slice(offset, offset + 1000) } });
+    }
+    if (!validLibraryActivity(activity)) throw Error('Invalid library activity.');
+    if (target !== store || readerConnection().endpoint !== config.endpoint) return;
+    const value = { ...activity, endpoint: config.endpoint };
+    if (JSON.stringify(snapshot.libraryActivity) === JSON.stringify(value)) return;
+    snapshot = { ...snapshot, libraryActivity: value };
+    if (!target.readOnly) {
+      try { snapshot = (await target.saveLibraryActivity(value)).snapshot; }
+      catch (error) { diagnostics.error('library-activity-cache-error', error); }
+    }
+  })().catch(error => { if (error.status !== 404) diagnostics.error('library-activity-error', error); })
+    .finally(() => { libraryActivityRefresh = null; renderLibraryEstimates(); });
+  return libraryActivityRefresh;
 }
 function readingLogChanged() { readingHistory.render(); renderLibraryEstimates(); }
 function readingCountsChanged() {
@@ -1298,7 +1341,7 @@ async function startLibrarySync() {
         refreshDocumentPicker(); renderLibrary(); savePreferences();
       },
     });
-    await sharedReader.sync();
+    await sharedReader.sync(); await refreshLibraryActivity(true);
     if (result.readOnly) { syncProgress(`Opened ${result.listed} desktop catalog entries. Files download when opened.`, 'Read-only desktop library'); return; }
     const detail = `${result.uploaded} sent · ${result.listed == null ? result.downloaded + ' received' : result.listed + ' catalog entries updated'} · ${result.deleted} deleted${result.conflicts ? ` · ${result.conflicts} conflicts kept as copies` : ''}`;
     syncProgress(`Synced ${result.directory}. ${detail}${result.skipped.length ? `. ${result.skipped.length} desktop files skipped: ${result.skipped.map(f => f.name).join(', ')}` : ''}`, result.skipped.length ? 'Synced; some files skipped' : result.conflicts ? 'Synced; kept both copies' : 'Library synced');

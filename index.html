@@ -59,7 +59,10 @@
         </label>
         <div id="documents" class="documents"></div>
         <footer id="library-reading-summary" class="library-reading-summary" aria-label="Library reading time">
-          <p><span>Whole library</span><strong id="library-reading-time">0 min</strong></p>
+          <p><span>Whole library</span><span class="library-time-values"><strong id="library-reading-time">0 min</strong><strong id="library-clearance-days">— days</strong></span></p>
+          <div class="library-clearance-row"><span id="library-clearance-ratio">Additions / clearance: —</span><button id="library-clearance-help" class="help-button" type="button" aria-label="Help: Library clearance">?</button></div>
+          <p id="library-clearance-rate" class="muted"></p>
+          <div id="library-clearance-explanation"><p>Days estimates how long the current whole library would take to clear at your last 14 days’ pace, assuming no new additions. Clearance includes the full word count of each deleted document plus counted document reading from texts that were not deleted. Reading a text and then deleting it counts only once; Ask reading is excluded.</p><p>The additions / clearance ratio compares added words with cleared words over the same 14 days. 1.0 means you add as fast as you clear; below 1.0 means the library is shrinking; above 1.0 means it is growing.</p><p id="library-clearance-detail"></p></div>
           <p id="library-reading-speed" class="muted"></p>
           <p id="library-reading-combined-speed" class="muted"></p>
           <p id="library-reading-pending" class="muted" hidden></p>

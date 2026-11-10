@@ -1,0 +1,65 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile, readFile, unlink, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { libraryManifest, libraryRemove, libraryActivity, libraryUploadChunk, libraryCommit } from '../integrations/even-terminal/pageborne-library.js';
+async function fixture(t) {
+  const root = await mkdtemp(path.join(tmpdir(), 'library-clearance-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  return { root, options: { libraryDir: root } };
+}
+test('local-only imports and deletions sync durably without counting a still-present desktop original', async t => {
+  const { root, options } = await fixture(t);
+  await writeFile(path.join(root, 'present.md'), 'still here');
+  await libraryManifest({}, options);
+  const at = Date.now(), removal = { id: 'offline-only', at, document: { name: 'offline.md', sha256: null, addedAt: at - 1000, words: 200 } };
+  const present = { ...removal, id: 'not-yet-deleted', document: { ...removal.document, name: 'present.md' } };
+  const first = await libraryActivity({ removals: [removal, present] }, options);
+  assert.equal(first.events.filter(e => e.kind === 'deleted').length, 1);
+  assert.equal(first.events.find(e => e.operationId === removal.id).document.words, 200);
+  const again = await libraryActivity({ removals: [removal, present] }, options);
+  assert.deepEqual(again, first);
+  await assert.rejects(libraryActivity({ removals: [{ ...removal, document: { ...removal.document, name: '../unsafe.md' } }] }, options));
+});
+test('desktop persists additions, exact deletion time/counts, retries, replacements and identical re-adds', async t => {
+  const { root, options } = await fixture(t);
+  await writeFile(path.join(root, 'book.md'), 'one two three');
+  let manifest = await libraryManifest({}, options), file = manifest.files[0];
+  const initial = await libraryActivity({}, options);
+  assert.equal(initial.events.length, 1); assert.equal(initial.events[0].document.words, 3);
+  const bytes = Buffer.from('four five'), descriptor = { name: 'book.md', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+  await libraryUploadChunk({ file: descriptor, offset: 0, data: bytes.toString('base64') }, options);
+  await libraryCommit({ file: descriptor, expected: file.sha256 }, options);
+  assert.equal((await libraryActivity({}, options)).events.length, 1, 'editing is not adding');
+  manifest = await libraryManifest({}, options); file = manifest.files[0];
+  const deletedAt = Date.now();
+  await libraryRemove({ name: file.name, expected: file.sha256, deletedAt, operationId: 'offline-1' }, options);
+  await libraryRemove({ name: file.name, expected: file.sha256, deletedAt, operationId: 'offline-1' }, options);
+  let log = await libraryActivity({}, options);
+  assert.equal(log.events.length, 2); assert.equal(log.events[1].at, deletedAt);
+  assert.equal(log.events[1].document.words, 2); assert.equal(log.events[1].operationId, 'offline-1');
+  await writeFile(path.join(root, 'book.md'), 'four five'); await libraryManifest({}, options);
+  log = await libraryActivity({}, options); assert.equal(log.events.length, 3);
+  assert.notEqual(log.events[0].id, log.events[2].id);
+});
+test('crash after unlink recovers deletion once; failed conflicts and incomplete manifests never imply deletion', async t => {
+  const { root, options } = await fixture(t), filePath = path.join(root, 'book.md');
+  await writeFile(filePath, 'one two'); const manifest = await libraryManifest({}, options);
+  await assert.rejects(libraryRemove({ name: 'book.md', expected: '0'.repeat(64) }, options), /changed/);
+  assert.equal((await libraryActivity({}, options)).events.length, 1);
+  const ledger = path.join(root, '.pageborne/activity.json'), saved = JSON.parse(await readFile(ledger));
+  saved.current[0].pendingDelete = { id: 'interrupted', at: Date.now() };
+  await writeFile(ledger, JSON.stringify(saved)); await unlink(filePath);
+  const recovered = await libraryActivity({}, options);
+  assert.equal(recovered.events.length, 2); assert.equal(recovered.events[1].operationId, 'interrupted');
+  assert.equal((await libraryActivity({}, options)).events.length, 2);
+  await writeFile(filePath, 'one two'); await libraryManifest({}, options); await unlink(filePath);
+  await symlink('/does-not-exist', path.join(root, 'unsafe.md'));
+  await libraryManifest({}, options);
+  assert.equal((await libraryActivity({}, options)).events.length, 3, 'skipped files prevent inferring removals');
+  await unlink(path.join(root, 'unsafe.md')); await libraryManifest({}, options);
+  assert.equal((await libraryActivity({}, options)).events.length, 4, 'complete manifest detects external removal');
+  assert.ok(manifest.id);
+});

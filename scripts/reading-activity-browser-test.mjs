@@ -43,6 +43,18 @@ try {
             get units() { return [...readingTracker.units.values()].map(({key,words,text}) => ({key,words,text})); },
             get askUnits() { return [...askReadingTracker.units.values()]; },
             get askPane() { return askReadingTracker.pane; },
+            get clearance() { return libraryClearance({ documents: documentsWithReadingCounts(), entries: readingLog?.entries,
+              activity: snapshot.libraryActivity, removals: snapshot.libraryRemovals,
+              scope: readerConnection().chatScope || '', endpoint: readerConnection().endpoint }); },
+            clearanceFixture: () => {
+              readingLog.entries = [];
+              const at = Date.now() - 86400000;
+              snapshot = { ...snapshot, documents: [{ id: 'remaining.md', title: 'Remaining reading', words: 2000, bytes: 12000 }], libraryRemovals: [],
+                libraryActivity: { version: 1, libraryId: 'fixture', endpoint: readerConnection().endpoint, startedAt: at - 30 * 86400000,
+                  events: [{ id: 'd', kind: 'deleted', at, document: { name: 'deleted.md', words: 1000, addedAt: at - 86400000 } },
+                    { id: 'a', kind: 'added', at, document: { name: 'added.md', words: 500, addedAt: at } }] } };
+              renderLibrary();
+            },
             add: entries => readingLog.add(entries), sync: syncReading, remove: deleteDocument,
             next: () => reader.pageStep(1), get position() { return reader.y; },
             ask: () => {
@@ -184,12 +196,30 @@ try {
       await page.screenshot({ path: `test-results/reading-activity/${mode}-history.png` });
       await page.locator('#reading-history').getByRole('button', { name: 'Close', exact: true }).click();
       await page.evaluate(() => window.__reading.remove('paper.md'));
+      const clearance = await page.evaluate(() => window.__reading.clearance);
+      assert.ok(clearance.deletedWords > 4000);
+      assert.equal(clearance.readWords, 0, 'reading and deleting the same text never count twice');
+      assert.equal(clearance.wordsPerDay, clearance.deletedWords / 14);
+      await showLibrary(page);
+      await expect(page.locator('#library-clearance-rate')).toContainText('last 14 days');
+      await page.getByRole('button', { name: 'Help: Library clearance', exact: true }).click();
+      await expect(page.locator('#library-clearance-detail')).toBeVisible();
+      await expect(page.locator('#library-clearance-detail')).toContainText('Deletion tracking began');
+      await page.keyboard.press('Escape');
+      for (const width of [320, 440]) {
+        await page.setViewportSize({ width, height: 806 });
+        assert.ok(await page.locator('.library-time-values').evaluate(el => el.getBoundingClientRect().right <= innerWidth));
+      }
+      await page.screenshot({ path: `test-results/reading-activity/${mode}-clearance.png` });
       await page.locator('#reading-history-open').click();
       await expect(page.locator('.reading-entries')).toContainText('Document no longer in this library');
       await page.locator('.reading-entries').getByRole('button', { name: 'Claude conversation', exact: true }).first().click();
       await expect(page.locator('.reading-conversation')).toContainText('still available after deleting');
       await page.screenshot({ path: `test-results/reading-activity/${mode}-archived-chat.png` });
       await page.reload({ waitUntil: 'networkidle' });
+      await page.evaluate(() => window.__reading.sync());
+      const afterRestart = await page.evaluate(() => window.__reading.clearance);
+      assert.equal(afterRestart.deletedWords, clearance.deletedWords, 'offline audit and desktop acknowledgement count only once');
       if (await page.locator('#library-panel').getAttribute('data-open') !== 'true') await page.locator('#library-toggle').click();
       await page.locator('#reading-history-open').click();
       await expect(page.locator('.reading-total')).not.toHaveText('0 words');
@@ -256,6 +286,16 @@ try {
         assert(fits, 'reading time is right aligned on the metadata row without overflowing');
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         await page.screenshot({ path: `test-results/reading-activity/${mode}-library-time-${width}.png` });
+      }
+      await page.evaluate(() => window.__reading.clearanceFixture());
+      await expect(page.locator('#library-clearance-days')).toHaveText('~28 days');
+      await expect(page.locator('#library-reading-time')).toHaveText('10 min');
+      await expect(page.locator('#library-clearance-ratio')).toHaveText('Additions / clearance: 0.50');
+      for (const width of [320, 440]) {
+        await page.setViewportSize({ width, height: 806 });
+        await expect(page.locator('#library-clearance-days')).toBeVisible();
+        assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+        await page.screenshot({ path: `test-results/reading-activity/${mode}-clearance-known-${width}.png` });
       }
       assert.deepEqual(errors, []);
       console.log(`${mode}: reading, fast paging, graph, deletion, archived chat, reload passed`);

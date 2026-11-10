@@ -1,4 +1,4 @@
-import { addDocument, replaceDocument, updateDocumentDates, assertDocumentUnchanged, localSnapshot, documentMetadata, hashDocument, MAX_DOCUMENTS } from './library.js';
+import { addDocument, replaceDocument, updateDocumentDates, assertDocumentUnchanged, localSnapshot, documentMetadata, libraryRemoval, hashDocument, MAX_DOCUMENTS } from './library.js';
 import { safeTimeout as setTimeout, cancelTimeout as clearTimeout } from './timers.js';
 
 export const STORAGE_PREFIX = 'even-reader:phone:v1';
@@ -138,21 +138,26 @@ export class PhoneLibrary {
       // A tiny durable deletion intent fits after discarding the unused index
       // slot. It allows freeing the selected body BEFORE writing a new index.
       // The old index remains the recovery record until the pointer commits.
-      const [kind, length, index] = pending;
-      if (pending.length !== 3 || kind !== 'delete' || !Number.isSafeInteger(length) || length <= 0
-        || !Number.isSafeInteger(index) || index < 0 || !this.index.head || this.index.head.length > length) {
+      const [kind, length, index, removal] = pending;
+      const recorded = removal && this.catalog.libraryRemovals?.some(event => event.id === removal.id);
+      if (![3, 4].includes(pending.length) || kind !== 'delete' || !Number.isSafeInteger(length) || length <= 0
+        || removal && (typeof removal.id !== 'string' || !Number.isFinite(removal.at) || !removal.document?.name)
+        || !Number.isSafeInteger(index) || index < 0 || !this.index.head
+        || !recorded && (removal ? this.index.head.length !== length : this.index.head.length > length)) {
         throw new Error('Invalid pending deletion. No files were changed.');
       }
-      if (this.index.head.length === length) {
+      if (!recorded && this.index.head.length === length) {
         const meta = this.catalog.documents[index];
         if (!meta) throw new Error('Invalid pending deletion. No files were changed.');
+        if (removal && removal.document.name !== meta.id) throw new Error('Invalid pending deletion. No files were changed.');
         if (meta.body) {
           validateDescriptor(meta.body);
           if (!meta.body.prefix.startsWith(`${STORAGE_PREFIX}:doc:`)) throw new Error('Invalid pending deletion. No files were changed.');
           for (let i = 0; i < meta.body.count; i++) await this.kv.set(`${meta.body.prefix}:${i}`, '');
         }
-        await this.commit({ ...this.catalog, documents: this.catalog.documents.filter((_, i) => i !== index) });
-        this.snapshot = { ...this.snapshot, documents: this.snapshot.documents.filter(doc => doc.id !== meta.id) };
+        const libraryRemovals = [...(this.catalog.libraryRemovals || []), ...(removal ? [removal] : [])];
+        await this.commit({ ...this.catalog, libraryRemovals, documents: this.catalog.documents.filter((_, i) => i !== index) });
+        this.snapshot = { ...this.snapshot, libraryRemovals, documents: this.snapshot.documents.filter(doc => doc.id !== meta.id) };
       }
       // Removing a metadata record strictly shrinks the index. A shorter
       // committed head means deletion already finished; never delete by the
@@ -183,7 +188,7 @@ export class PhoneLibrary {
     const { body, cachedAt, ...doc } = meta;
     return { ...doc, revision: doc.revision || body?.prefix, ...(this.onDemand ? { availableOffline: !!body } : {}) };
   }
-  refreshSnapshot() { this.snapshot = localSnapshot({ documents: this.catalog.documents.map(meta => this.metadata(meta)) }); }
+  refreshSnapshot() { this.snapshot = localSnapshot({ ...this.catalog, documents: this.catalog.documents.map(meta => this.metadata(meta)) }); }
   get cacheUsage() { return this.catalog.documents.reduce((sum, doc) => sum + (remoteBacked(doc) ? doc.body?.length || 0 : 0), 0); }
   async read(legacy = null, onProgress = () => {}) {
     const saved = await this.index.read();
@@ -201,7 +206,7 @@ export class PhoneLibrary {
       else if (!remoteBacked(meta)) throw new Error('Saved phone document has no original or desktop reference. No files were changed.');
       documents.push({ ...this.metadata(meta), ...(!this.lazy && body ? { content: await readChunks(this.kv, body) } : {}) });
     }
-    this.snapshot = localSnapshot({ documents });
+    this.snapshot = localSnapshot({ ...this.catalog, documents });
     if (!this.catalog.migrated) {
       const old = localSnapshot(typeof legacy === 'function' ? await legacy() : legacy);
       for (const doc of old.documents) {
@@ -398,6 +403,13 @@ export class PhoneLibrary {
       return result;
     });
   }
+  saveLibraryActivity(activity) {
+    return this.serialize(async () => {
+      await this.commit({ ...this.catalog, libraryActivity: activity });
+      this.snapshot = { ...this.snapshot, libraryActivity: activity };
+      return { snapshot: this.snapshot };
+    });
+  }
   remove(id, expected = undefined) {
     return this.serialize(async () => {
       this.requireWritable();
@@ -405,7 +417,8 @@ export class PhoneLibrary {
       const meta = this.catalog.documents.find(doc => doc.id === id);
       if (!meta) return { snapshot: this.snapshot };
       await this.index.releaseInactive();
-      await this.kv.set(JOURNAL, JSON.stringify(['delete', this.index.head.length, this.catalog.documents.indexOf(meta)]));
+      await this.kv.set(JOURNAL, JSON.stringify(['delete', this.index.head.length, this.catalog.documents.indexOf(meta),
+        ...(expected === undefined ? [libraryRemoval(meta)] : [])]));
       try { await this.recover(); }
       catch (error) { if (this.catalog.documents.some(doc => doc.id === id)) throw Object.assign(error, { deletionPending: true }); }
       return { snapshot: this.snapshot };

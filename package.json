@@ -1,6 +1,6 @@
 {
   "name": "even-reader",
-  "version": "0.8.163",
+  "version": "0.8.164",
   "private": true,
   "type": "module",
   "description": "Markdown and PDF reading on Even G2 glasses, phones and tablets",

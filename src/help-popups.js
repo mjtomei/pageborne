@@ -40,6 +40,7 @@ export function helpPopup(nodes, { button, title = 'Help', anchor, control } = {
 helpPopup.count = 0;
 
 export function installHelpPopups() {
+  helpPopup([document.getElementById('library-clearance-explanation')], { button: document.getElementById('library-clearance-help'), title: 'Library clearance' });
   helpPopup([document.getElementById('library-help-content')], { button: document.getElementById('library-help'), title: 'Library' });
   helpPopup([document.getElementById('glasses-hints')], { button: document.getElementById('hints-toggle'), title: 'Glasses controls' });
   helpPopup(['ask-voice-help', 'ask-voice-models', 'ask-voice-metrics'].map(id => document.getElementById(id)), { title: 'Ask about this', button: document.getElementById('ask-help') });

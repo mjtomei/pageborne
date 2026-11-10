@@ -1,6 +1,6 @@
 import { base64ToBytes, bytesToBase64 } from './binary.js';
 import { libraryTimestamp } from './library-order.js';
-import { validWordCount } from './reading-estimates.js';
+import { validWordCount, documentReadingWords } from './reading-estimates.js';
 import { readingWords } from './reading-activity.js';
 import { parseDocument } from './document.js';
 
@@ -18,7 +18,10 @@ export function countWords(text) {
 // Keep the old database and snapshot key so an upgrade retains downloaded files.
 // positionKey preserves bookmarks/positions without depending on a connection.
 export function localSnapshot(saved) {
-  return { localVersion: 1, documents: (saved?.documents || []).map(doc => ({
+  return { localVersion: 1,
+    ...(saved?.libraryRemovals ? { libraryRemovals: saved.libraryRemovals } : {}),
+    ...(saved?.libraryActivity ? { libraryActivity: saved.libraryActivity } : {}),
+    documents: (saved?.documents || []).map(doc => ({
     id: doc.id, title: doc.title, ...(typeof doc.content === 'string' ? { content: doc.content } : {}),
     ...(doc.revision ? { revision: doc.revision } : {}),
     ...(doc.sha256 ? { sha256: doc.sha256 } : {}),
@@ -97,7 +100,7 @@ export function replaceDocument(saved, document, expected) {
   const snapshot = localSnapshot(saved), prior = snapshot.documents.find(doc => doc.id === document.id);
   assertDocumentUnchanged(prior, expected);
   const documents = snapshot.documents.filter(doc => doc.id !== document.id);
-  const result = addDocument({ documents }, document);
+  const result = addDocument({ ...snapshot, documents }, document);
   result.document.positionKey = prior?.positionKey || document.positionKey || `local\n${document.id}`;
   if (prior) {
     // Replacing content is not a new addition, including legacy undated files.
@@ -136,6 +139,10 @@ export function documentRevision() {
   return Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16).padStart(8, '0')).join('');
 }
 export function documentMetadata({ content, ...meta }) { return meta; }
+export function libraryRemoval(doc, at = Date.now(), id = documentRevision()) {
+  return { id, kind: 'deleted', at, ...(doc.remote ? { libraryId: doc.remote.libraryId, endpoint: doc.remote.endpoint } : {}),
+    document: { name: doc.id, sha256: doc.sha256 || null, addedAt: doc.addedAt || 0, words: documentReadingWords(doc) } };
+}
 export async function hashDocument(doc) {
   if (typeof doc.content !== 'string') throw new Error('Load the document before reading its contents.');
   const bytes = doc.format === 'pdf' ? base64ToBytes(doc.content) : encoder.encode(doc.content);
@@ -252,9 +259,14 @@ export class LocalLibrary {
   }
   async updateDates(updates) { return this.result(this.catalog(snapshot => updateDocumentDates(snapshot, updates))); }
   async updateMetadata(updates) { return this.result(this.catalog(snapshot => updateDocumentMetadata(snapshot, updates))); }
+  async saveLibraryActivity(activity) {
+    return this.result(this.catalog(snapshot => ({ snapshot: { ...snapshot, libraryActivity: activity } })));
+  }
   async remove(id, expected = undefined) {
     return this.result(this.catalog((snapshot, store) => {
       if (expected !== undefined) assertDocumentUnchanged(snapshot.documents.find(doc => doc.id === id), expected);
+      const doc = snapshot.documents.find(doc => doc.id === id);
+      if (doc && expected === undefined) snapshot.libraryRemovals = [...(snapshot.libraryRemovals || []), libraryRemoval(doc)];
       store.delete(`document:${id}`);
       return { snapshot: { ...snapshot, documents: snapshot.documents.filter(doc => doc.id !== id) } };
     }));

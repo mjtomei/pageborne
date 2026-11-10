@@ -211,7 +211,12 @@ export async function syncLibrary({ client, snapshot, store, saved = {}, saveSta
       const result = await store.remove(action.name, doc); current = result.snapshot; await changed(result, action.name);
       delete hashes[action.name]; counts.deleted++;
     } else if (action.kind === 'remove-desktop') {
-      await client.api('pageborne/library/remove', { signal, body: { name: action.name, expected: action.expected } });
+      const removal = [...(current.libraryRemovals || [])].reverse().find(event => event.document.name === action.name
+        && (!event.document.sha256 || event.document.sha256 === action.expected)
+        && (!event.libraryId || event.libraryId === remote.id));
+      await client.api('pageborne/library/remove', { signal, body: { name: action.name, expected: action.expected,
+        ...(removal ? { operationId: removal.id, deletedAt: removal.at,
+          ...(validWordCount(removal.document.words) ? { readingWords: removal.document.words } : {}) } : {}) } });
       delete hashes[action.name]; counts.deleted++;
     } else {
       // Save both copies before replacing the phone's original. A dropped
