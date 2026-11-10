@@ -150,6 +150,9 @@ try {
       await expect(page.locator('.reading-average')).toHaveText(`${speed} · documents only`);
       await expect(page.locator('.reading-combined-average')).toContainText('Including Ask:');
       await expect(page.locator('.reading-times')).toContainText('reading Ask');
+      await expect(page.locator('.reading-entries > li')).toHaveCount(1);
+      await expect(page.locator('.reading-entries > li > h3')).toHaveText('Reading record');
+      await expect(page.locator('.reading-entries > li')).toContainText(/document words \+ [\d,]+ Ask words/);
       const helpButton = page.getByRole('button', { name: 'Help: Reading history', exact: true });
       const help = page.locator('#reading-history .help-popup');
       await expect(help).not.toBeVisible();
@@ -174,6 +177,8 @@ try {
       await expect(page.locator('.reading-view-log[open]')).toContainText('Start');
       await expect(page.locator('.reading-view-log[open] time').first()).toHaveAttribute('datetime', /T/);
       await expect(page.locator('.reading-view-log[open]')).toContainText('End');
+      await expect(page.locator('.reading-view-log[open]')).toContainText('Document ·');
+      await expect(page.locator('.reading-view-log[open]')).toContainText('Ask ·');
       await page.screenshot({ path: `test-results/reading-activity/${mode}-views.png` });
       await page.locator('#reading-history').evaluate(el => el.scrollTop = 0);
       await page.screenshot({ path: `test-results/reading-activity/${mode}-history.png` });

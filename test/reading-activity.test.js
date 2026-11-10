@@ -29,6 +29,35 @@ test('adjacent readings become one display entry with totals, ranges and all con
   assert.deepEqual(group.platforms, ['web', 'glasses']); assert.deepEqual(group.sessions, [claude, codex]);
   assert.deepEqual(entries, before, 'grouping never alters stored events or input ordering');
 });
+test('document and Ask views share one display entry without mixing page ranges or altering accounting', () => {
+  const claude = { agent: 'claude', id: 'chat-one' }, codex = { agent: 'codex', id: 'chat-two' };
+  const ask = (id, agent, session) => historyEntry(id, { kind: 'ask', page: 100 + id, position: 0,
+    document: { id: 'book.pdf', key: JSON.stringify(['book-key', 'terminal', 'library-one', agent, '']), title: 'Ask title', revision: session.id },
+    sessions: [session] });
+  const entries = [historyEntry(0), historyEntry(1), ask(2, 'claude', claude), ask(3, 'codex', codex), historyEntry(4), ask(5, 'claude', claude)];
+  const before = structuredClone(entries), totals = readingTotals(entries, { includeAsk: true });
+  const groups = groupReadingEntries(entries), group = groups[0];
+  assert.equal(groups.length, 1); assert.equal(group.kind, 'document');
+  assert.equal(group.document.key, 'book-key'); assert.equal(group.document.title, 'Book');
+  assert.equal(group.words, 600); assert.equal(group.documentWords, 300); assert.equal(group.askWords, 300);
+  assert.equal(group.documentViews, 3); assert.equal(group.askViews, 3);
+  assert.equal(group.seconds, 180); assert.equal(group.count, 6);
+  assert.equal(readingGroupLocation(group), 'pages 1–5', 'Ask pane numbers never become document page numbers');
+  assert.equal(group.startedAt, entries[0].at); assert.equal(group.endedAt, entries[5].endedAt);
+  assert.deepEqual(group.sessions, [claude, codex]);
+  assert.deepEqual(group.views, [...entries].reverse()); assert.deepEqual(entries, before);
+  assert.deepEqual(readingTotals(entries, { includeAsk: true }), totals);
+  assert.equal(groupReadingEntries(entries.filter(e => e.kind === 'ask'))[0].kind, 'ask');
+});
+test('Ask grouping preserves distinct source keys and non-document sessions', () => {
+  const ask = (id, key) => historyEntry(id, { kind: 'ask', document: { id: 'book.pdf', key, title: 'Book' } });
+  const key = (source, suffix = []) => JSON.stringify([source, 'terminal', 'library-one', 'claude', '', ...suffix]);
+  assert.equal(groupReadingEntries([historyEntry(0), ask(1, key('different-key')), historyEntry(2)]).length, 3);
+  assert.equal(groupReadingEntries([ask(0, key(null, ['librarian'])), ask(1, key(null, ['terminal-session', 'one'])), ask(2, key(null, ['terminal-session', 'two']))]).length, 3);
+  assert.equal(groupReadingEntries([ask(0, 'unrecognized-key'), historyEntry(1)]).length, 2);
+  const [web] = groupReadingEntries([historyEntry(0), ask(1, JSON.stringify(['book-key', 'provider', 'https://example.test', 'model', '']))]);
+  assert.equal(web.count, 2); assert.equal(web.kind, 'document');
+});
 test('a different document, library or day separates reading groups', () => {
   const other = { id: 'other.pdf', key: 'other-key', title: 'Book' };
   const entries = [historyEntry(0), historyEntry(1, { document: other }), historyEntry(2),

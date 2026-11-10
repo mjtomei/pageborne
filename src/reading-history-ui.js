@@ -84,7 +84,9 @@ export class ReadingHistoryUI {
     for (const entry of selected.slice(0, this.limit)) {
       const time = at => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
       const start = time(entry.startedAt), end = time(entry.endedAt);
-      const item = node('li'), heading = node('h3', `${entry.kind === 'ask' ? 'Ask · ' : ''}${entry.document.title}`), metadata = node('p', `${number(entry.words)} words · ${readingGroupLocation(entry)} · ${start}–${end} · ${entry.platforms.join(', ')}`, 'muted');
+      const words = entry.documentViews && entry.askViews
+        ? `${number(entry.documentWords)} document words + ${number(entry.askWords)} Ask words` : `${number(entry.words)} words`;
+      const item = node('li'), heading = node('h3', `${entry.kind === 'ask' ? 'Ask · ' : ''}${entry.document.title}`), metadata = node('p', `${words} · ${readingGroupLocation(entry)} · ${start}–${end} · ${entry.platforms.join(', ')}`, 'muted');
       item.append(heading, metadata);
       if (entry.count === 1) item.append(node('p', entry.excerpt, 'reading-excerpt'));
       const details = node('details', null, 'reading-view-log'), summary = node('summary', `Viewing log · ${entry.count} ${entry.count === 1 ? 'view' : 'views'}`);
@@ -96,7 +98,7 @@ export class ReadingHistoryUI {
           const row = node('p', null, 'muted');
           const start = node('time', time(view.at)), end = node('time', time(view.endedAt));
           start.dateTime = view.at; end.dateTime = view.endedAt; start.title = view.at; end.title = view.endedAt;
-          row.append(`${view.page ? `Page ${view.page}` : `${number(view.position)}%`} · Start `, start, ' · End ', end,
+          row.append(`${view.kind === 'ask' ? 'Ask' : 'Document'} · ${view.page ? `Page ${view.page}` : `${number(view.position)}%`} · Start `, start, ' · End ', end,
             ` · ${duration(view.rawSeconds)} · ${number(view.rawWords)} words shown · ${number(view.words)} counted${view.version === 2 ? '' : ' · legacy record'}`);
           details.append(row);
         }
