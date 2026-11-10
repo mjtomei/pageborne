@@ -24,7 +24,7 @@ import { speedTitleBitmap } from './speed-title.js';
 import { pdfSettingsFor, normalizePdfSettings, usePdfDefaults, forgetPdfSettings } from './pdf-settings.js';
 import { GlassesDisplay, paintFrame } from './glasses.js';
 import { LocalLibrary } from './library.js';
-import { libraryClearance, validLibraryActivity } from './library-clearance.js';
+import { CLEARANCE_DAYS, libraryClearance, validLibraryActivity } from './library-clearance.js';
 import { syncLibrary, desktopLibrary, preparedWordUpdates, downloadCatalogDocument } from './library-sync.js';
 import { EvenTerminal } from './ask-terminal.js';
 import { connectionMode } from './ask-connections.js';
@@ -618,16 +618,16 @@ function renderLibraryEstimates() {
   const config = readerConnection(), activity = snapshot?.libraryActivity?.endpoint === config.endpoint ? snapshot.libraryActivity : null;
   const clearance = libraryClearance({ documents, entries: readingLog?.entries, activity,
     removals: snapshot?.libraryRemovals, scope: config.chatScope || '', endpoint: config.endpoint });
-  $('library-clearance-days').textContent = clearance.days == null ? '— days' : `${clearance.days === 0 ? '0' : '~' + Math.max(1, Math.ceil(clearance.days)).toLocaleString()} days`;
+  $('library-clearance-days').textContent = clearance.days == null ? '— days' : `${clearance.days === 0 ? '0' : '~' + Math.max(1, Math.ceil(clearance.days)).toLocaleString()} days${clearance.daysPartial ? ' · partial' : ''}`;
   const ratio = clearance.ratio == null ? clearance.available && clearance.addedWords > 0 && !clearance.clearedWords
-    && !clearance.missingAdded && !clearance.missingDeleted ? 'no clearance yet' : '—' : clearance.ratio.toFixed(2);
+    && !clearance.missingAdded && !clearance.missingDeleted ? 'no clearance yet' : '—' : `${clearance.ratio.toFixed(2)}${clearance.ratioPartial ? ' · partial' : ''}`;
   $('library-clearance-ratio').textContent = `Additions / clearance: ${ratio}`;
   $('library-clearance-rate').textContent = clearance.available
-    ? `${Math.round(clearance.wordsPerDay).toLocaleString()} words cleared/day · last 14 days${clearance.preliminary ? ' · preliminary' : ''}${clearance.pending ? ' · deletions pending sync' : ''}`
+    ? `${Math.round(clearance.wordsPerDay).toLocaleString()} words cleared/day · last ${CLEARANCE_DAYS} days${clearance.preliminary ? ' · preliminary' : ''}${clearance.pending ? ' · deletions pending sync' : ''}`
     : 'Sync to load library clearance history.';
-  $('library-clearance-detail').textContent = `Last 14 days: ${Math.round(clearance.readWords).toLocaleString()} words read from texts not deleted, plus ${clearance.deletedWords.toLocaleString()} words in deleted texts. ${clearance.addedWords.toLocaleString()} words added.`
-    + (clearance.missingAdded + clearance.missingDeleted + clearance.missingCurrent ? ' Some word counts are missing; affected estimates are unavailable.' : '')
-    + (activity && clearance.preliminary ? ` Deletion tracking began ${new Date(activity.startedAt).toLocaleDateString()}; earlier deletions are unavailable. The daily rate always divides by 14 while history builds up.` : '');
+  $('library-clearance-detail').textContent = `Last ${CLEARANCE_DAYS} days: ${Math.round(clearance.readWords).toLocaleString()} words read, excluding reading already included in deleted texts, plus ${clearance.deletedWords.toLocaleString()} words in deleted texts. ${clearance.addedWords.toLocaleString()} words added.`
+    + (clearance.missingAdded + clearance.missingDeleted + clearance.missingCurrent ? ' Pending word counts are excluded. Partial estimates use the counts available now and update when the remaining counts arrive.' : '')
+    + (activity && clearance.preliminary ? ` Deletion tracking began ${new Date(activity.startedAt).toLocaleDateString()}; earlier history may be incomplete. The daily rate always divides by ${CLEARANCE_DAYS} while history builds up.` : '');
   $('library-reading-speed').textContent = readingSpeedLabel(average);
   const combined = averageReadingSpeed(readingLog?.entries, { includeAsk: true });
   $('library-reading-combined-speed').textContent = `Including Ask: ${combined == null ? 'no reading logged yet' : `${Math.round(combined).toLocaleString()} wpm`}`;

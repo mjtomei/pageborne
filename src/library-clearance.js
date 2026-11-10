@@ -1,7 +1,7 @@
 import { acceptedReadingEntries } from './reading-metrics.js';
 import { documentReadingWords, validWordCount } from './reading-estimates.js';
 
-export const CLEARANCE_DAYS = 14;
+export const CLEARANCE_DAYS = 30;
 const DAY = 86400000;
 export function validLibraryActivity(value) {
   return value?.version === 1 && typeof value.libraryId === 'string' && Number.isFinite(value.startedAt)
@@ -42,9 +42,9 @@ export function libraryClearance({ documents = [], entries = [], activity, remov
   for (const entry of acceptedReadingEntries(entries)) {
     const at = Date.parse(entry.at);
     if (entry.kind === 'ask' || (entry.scope || '') !== scope || at < since || at > now || !Number.isFinite(at)) continue;
-    // The entire removed text already counts as clearance. Only suppress
-    // reading from that incarnation, not a later re-add of the same filename.
-    if (deleted.some(event => event.document.name === entry.document.id
+    // Once a deletion has a full count it replaces reading from that
+    // incarnation. Until then, retain the reading words we already know.
+    if (deleted.some(event => event.document.words !== null && event.document.name === entry.document.id
       && at >= event.document.addedAt && at <= event.at)) continue;
     readWords += entry.words;
   }
@@ -57,7 +57,11 @@ export function libraryClearance({ documents = [], entries = [], activity, remov
   const available = !!activity, wordsPerDay = clearedWords / CLEARANCE_DAYS;
   return { available, pending, readWords, deletedWords, addedWords, clearedWords, wordsPerDay,
     missingDeleted, missingAdded, missingCurrent,
+    daysPartial: missingCurrent + missingDeleted > 0,
+    ratioPartial: missingAdded + missingDeleted > 0,
     preliminary: !activity || activity.startedAt > since,
-    days: available && !missingCurrent && !missingDeleted ? words === 0 ? 0 : clearedWords > 0 ? words * CLEARANCE_DAYS / clearedWords : null : null,
-    ratio: available && !missingDeleted && !missingAdded && clearedWords > 0 ? addedWords / clearedWords : null };
+    // Pending counts contribute nothing yet, without hiding known totals.
+    // An entirely uncounted library must not look like an empty one.
+    days: available && (words > 0 || !missingCurrent) ? words === 0 ? 0 : clearedWords > 0 ? words * CLEARANCE_DAYS / clearedWords : null : null,
+    ratio: available && clearedWords > 0 ? addedWords / clearedWords : null };
 }

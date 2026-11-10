@@ -46,14 +46,23 @@ try {
             get clearance() { return libraryClearance({ documents: documentsWithReadingCounts(), entries: readingLog?.entries,
               activity: snapshot.libraryActivity, removals: snapshot.libraryRemovals,
               scope: readerConnection().chatScope || '', endpoint: readerConnection().endpoint }); },
-            clearanceFixture: () => {
+            clearanceFixture: (pending = false) => {
               readingLog.entries = [];
               const at = Date.now() - 86400000;
-              snapshot = { ...snapshot, documents: [{ id: 'remaining.md', title: 'Remaining reading', words: 2000, bytes: 12000 }], libraryRemovals: [],
+              snapshot = { ...snapshot, documents: [{ id: 'remaining.md', title: 'Remaining reading', words: 2000, bytes: 12000 },
+                  ...(pending ? [{ id: 'pending.pdf', title: 'Preparing paper', format: 'pdf', bytes: 1000 }] : [])], libraryRemovals: [],
                 libraryActivity: { version: 1, libraryId: 'fixture', endpoint: readerConnection().endpoint, startedAt: at - 30 * 86400000,
                   events: [{ id: 'd', kind: 'deleted', at, document: { name: 'deleted.md', words: 1000, addedAt: at - 86400000 } },
-                    { id: 'a', kind: 'added', at, document: { name: 'added.md', words: 500, addedAt: at } }] } };
+                    { id: 'a', kind: 'added', at, document: { name: 'added.md', words: 500, addedAt: at } },
+                    ...(pending ? [{ id: 'p', kind: 'added', at, document: { name: 'pending.pdf', words: null, addedAt: at } },
+                      { id: 'u', kind: 'deleted', at, document: { name: 'uncounted.pdf', words: null, addedAt: at - 86400000 } }] : [])] } };
               renderLibrary();
+            },
+            completeClearanceCounts: () => {
+              snapshot.documents.find(doc => doc.id === 'pending.pdf').readingWords = 1000;
+              snapshot.libraryActivity.events.find(event => event.id === 'p').document.words = 1000;
+              snapshot.libraryActivity.events.find(event => event.id === 'u').document.words = 500;
+              readingCountsChanged();
             },
             add: entries => readingLog.add(entries), sync: syncReading, remove: deleteDocument,
             next: () => reader.pageStep(1), get position() { return reader.y; },
@@ -199,9 +208,9 @@ try {
       const clearance = await page.evaluate(() => window.__reading.clearance);
       assert.ok(clearance.deletedWords > 4000);
       assert.equal(clearance.readWords, 0, 'reading and deleting the same text never count twice');
-      assert.equal(clearance.wordsPerDay, clearance.deletedWords / 14);
+      assert.equal(clearance.wordsPerDay, clearance.deletedWords / 30);
       await showLibrary(page);
-      await expect(page.locator('#library-clearance-rate')).toContainText('last 14 days');
+      await expect(page.locator('#library-clearance-rate')).toContainText('last 30 days');
       await page.getByRole('button', { name: 'Help: Library clearance', exact: true }).click();
       await expect(page.locator('#library-clearance-detail')).toBeVisible();
       await expect(page.locator('#library-clearance-detail')).toContainText('Deletion tracking began');
@@ -288,7 +297,7 @@ try {
         await page.screenshot({ path: `test-results/reading-activity/${mode}-library-time-${width}.png` });
       }
       await page.evaluate(() => window.__reading.clearanceFixture());
-      await expect(page.locator('#library-clearance-days')).toHaveText('~28 days');
+      await expect(page.locator('#library-clearance-days')).toHaveText('~60 days');
       await expect(page.locator('#library-reading-time')).toHaveText('10 min');
       await expect(page.locator('#library-clearance-ratio')).toHaveText('Additions / clearance: 0.50');
       for (const width of [320, 440]) {
@@ -299,6 +308,23 @@ try {
         assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
         await page.screenshot({ path: `test-results/reading-activity/${mode}-clearance-known-${width}.png` });
       }
+      await page.evaluate(() => window.__reading.clearanceFixture(true));
+      await expect(page.locator('#library-clearance-days')).toHaveText('~60 days · partial');
+      await expect(page.locator('#library-clearance-ratio')).toHaveText('Additions / clearance: 0.50 · partial');
+      await expect(page.locator('#library-reading-time')).toHaveText('10 min+');
+      await expect(page.locator('#library-clearance-detail')).toContainText('Pending word counts are excluded');
+      for (const width of [320, 440]) {
+        await page.setViewportSize({ width, height: 806 });
+        await showLibrary(page);
+        await page.waitForFunction(() => { const r = document.querySelector('#library-panel').getBoundingClientRect(); return r.left >= -1 && r.right <= innerWidth + 1; });
+        assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+        await page.screenshot({ path: `test-results/reading-activity/${mode}-clearance-partial-${width}.png` });
+      }
+      await page.evaluate(() => window.__reading.completeClearanceCounts());
+      await expect(page.locator('#library-clearance-days')).toHaveText('~60 days');
+      await expect(page.locator('#library-clearance-ratio')).toHaveText('Additions / clearance: 1.00');
+      await expect(page.locator('#library-reading-time')).toHaveText('15 min');
+      await expect(page.locator('#library-clearance-detail')).not.toContainText('Pending word counts');
       assert.deepEqual(errors, []);
       console.log(`${mode}: reading, fast paging, graph, deletion, archived chat, reload passed`);
     } catch (error) {

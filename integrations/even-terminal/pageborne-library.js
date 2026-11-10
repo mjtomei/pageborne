@@ -5,6 +5,8 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 
 export const LIBRARY_CHUNK_BYTES = 768 * 1024;
+// Cover the reader's rolling 30 days with a day of sync margin.
+const ACTIVITY_HISTORY_DAYS = 31;
 const hash = value => createHash('sha256').update(value).digest('hex');
 const locks = new Map();
 async function locked(key, work) {
@@ -203,7 +205,7 @@ async function updateActivity(root, files, { complete = false, removed = [], pen
   // A PDF count may become available after its addition (or deletion). Keep
   // unknowns explicit until a completed preparation for those exact bytes exists.
   const counts = new Map();
-  for (const event of saved.events) if (event.at >= Date.now() - 15 * 86400000 && event.document.words === null && /\.pdf$/i.test(event.document.name)) {
+  for (const event of saved.events) if (event.at >= Date.now() - ACTIVITY_HISTORY_DAYS * 86400000 && event.document.words === null && /\.pdf$/i.test(event.document.name)) {
     const sha = event.document.sha256;
     if (!counts.has(sha)) counts.set(sha, await preparedWordCount(root, sha).catch(() => null));
     event.document.words = counts.get(sha);
@@ -237,7 +239,7 @@ export async function libraryActivity({ removals = [] } = {}, options) {
     for (const doc of prior.current) if (doc.pendingDelete && !await safeFile(path.join(root, doc.name))) removed.push(doc.name);
     const saved = await updateActivity(root, [], { removed, localRemovals });
     return { version: 1, libraryId: await identity(root), startedAt: saved.startedAt,
-      events: saved.events.filter(event => event.at >= Date.now() - 15 * 86400000) };
+      events: saved.events.filter(event => event.at >= Date.now() - ACTIVITY_HISTORY_DAYS * 86400000) };
   });
 }
 export async function libraryIdentity(options) { return identity(await rootDirectory(options)); }
