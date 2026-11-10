@@ -42,6 +42,9 @@ await context.route('**/api/**', async route => {
   assert.equal(url.origin, endpoint, 'tests must not inherit private developer pairing');
   const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Authorization, Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' };
   if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers, body: '' });
+  if (url.pathname.endsWith('/pageborne/library/activity') && request.method() === 'GET') {
+    return route.fulfill({ headers, json: { version: 1, libraryId: 'fixture-library', startedAt: Date.now(), events: [] } });
+  }
   if (url.pathname.endsWith('/pageborne/library')) {
     await manifestReady;
     return route.fulfill({ headers, json: { version: 1, id: 'fixture-library', directory: 'fixture', files: library.snapshot.documents.map((doc, i) =>
@@ -79,7 +82,8 @@ try {
   await expect(page.locator('.document-reading-time').filter({ hasText: '—' })).toHaveCount(0);
   await expect(page.locator('#library-sync')).toBeEnabled();
   quota = usage(); rejectNonempty = true;
-  assert(requests.every(r => !r.path.includes('/library/') && !(r.path.endsWith('/library') && !['GET', 'OPTIONS'].includes(r.method))), 'count refresh must never change desktop files');
+  assert(requests.every(r => !r.path.includes('/pageborne/library') || ['GET', 'OPTIONS'].includes(r.method)
+    && ['/api/pageborne/library', '/api/pageborne/library/activity'].includes(r.path)), 'count and activity refreshes must never change desktop files');
   const row = page.locator(`[data-document-id="${target.id}"]`);
   await row.locator('.document-delete').tap();
   const confirm = row.locator('[data-confirm-delete]'); await confirm.scrollIntoViewIfNeeded();
