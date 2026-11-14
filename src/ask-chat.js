@@ -67,9 +67,14 @@ export class AskChat {
       this.update(key, id, item.answer, 'complete');
     }
     const turn = this.turns(key).find(turn => turn.id === id);
+    let changed = false;
     if (binding.pending?.marker && turn.marker !== binding.pending.marker) {
-      turn.marker = binding.pending.marker; this.persist(key);
+      turn.marker = binding.pending.marker; changed = true;
     }
+    if (binding.pending?.plain && Array.isArray(binding.pending.priorTurnIds) && !turn.remoteId && !turn.plainPriorIds) {
+      turn.plainPriorIds = binding.pending.priorTurnIds; changed = true;
+    }
+    if (changed) this.persist(key);
     return id;
   }
   mergeConversation(key, sessionId, incoming, { baseline = false } = {}) {
@@ -79,6 +84,17 @@ export class AskChat {
       let turn = existing.find(t => !used.has(t) && t.remoteSession === sessionId &&
         identities.some(id => t.remoteId === id || t.remoteAliases?.includes(id)));
       if (!turn && remote.marker) turn = existing.find(t => !used.has(t) && t.marker === remote.marker);
+      // A superseded plain Terminal message may finish after another message
+      // became pending. Recover its identity from its own pre-send boundary,
+      // never from text alone or an arbitrary occurrence of a repeated question.
+      if (!turn) {
+        const candidates = existing.filter(t => !used.has(t) && !t.remoteId && Array.isArray(t.plainPriorIds)
+          && t.question.trim() === remote.question.trim()
+          && !identities.some(id => t.plainPriorIds.includes(id))
+          && incoming.filter(r => r.question.trim() === t.question.trim()
+            && ![r.id, ...(r.aliases || [])].some(id => t.plainPriorIds.includes(id))).length === 1);
+        if (candidates.length === 1) turn = candidates[0];
+      }
       // Migrate old phone turns that predate stored correlation markers. Match
       // each occurrence once; repeated questions are separate messages.
       if (!turn && remote.marker) turn = existing.find(t => !used.has(t) && !t.remoteId && !t.marker && t.question === remote.question &&
@@ -122,6 +138,7 @@ export class AskChat {
       }
       Object.assign(turn, { remoteSession: sessionId, remoteId: remote.id, remoteAliases: [...new Set([...(turn.remoteAliases || []), ...identities])],
         ...(remote.marker ? { marker: remote.marker } : {}), question: remote.question, answer, state });
+      delete turn.plainPriorIds;
       if (!historical && state === 'complete' && answer && (fresh || oldState !== 'complete')) {
         if (turn.readThrough == null) turn.readThrough = 0;
         delete turn.unreadDismissed;

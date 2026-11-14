@@ -4,7 +4,7 @@ import { syncPaperFiles, fileQuestion } from './ask-documents.js';
 import { paperSessionTitle } from '../integrations/even-terminal/pageborne-session-titles.js';
 import { desktopLibrary } from './library-sync.js';
 import { librarianQuestion } from './librarian.js';
-import { SESSION_LIST_LIMIT, terminalSessionQuestion } from './terminal-sessions.js';
+import { SESSION_LIST_LIMIT } from './terminal-sessions.js';
 import { displayQuestion } from '../integrations/even-terminal/pageborne-conversation.js';
 
 const wait = (ms, signal) => new Promise((resolve, reject) => {
@@ -65,6 +65,18 @@ export class EvenTerminal {
       const parsed = displayQuestion(turn.question);
       if (parsed.marker) Object.assign(turn, parsed);
     }
+    // Terminal messages are ordinary user text. Associate a pending local turn
+    // with a unique new occurrence after its saved pre-send transcript boundary.
+    // Never mistake an older identical question (including an ID alias) for it.
+    const pending = binding.pending;
+    if (pending?.plain && Array.isArray(pending.priorTurnIds)) {
+      const before = new Set(pending.priorTurnIds);
+      const matches = result.turns.filter(turn => turn.question.trim() === pending.question.trim()
+        && ![turn.id, ...(turn.aliases || [])].some(id => before.has(id)));
+      if (matches.length > 1) throw new Error('More than one matching message arrived. Check the desktop session before sending again.');
+      // This marker stays on the phone; it is never included in the prompt.
+      if (matches.length === 1) matches[0].marker = pending.marker;
+    }
     // Optional extension; old bridges still return ordinary text history.
     for (const turn of result.turns) if (turn.activities != null && (!Array.isArray(turn.activities) || turn.activities.length > 24
       || turn.activities.some(a => !a || typeof a.id !== 'string' || typeof a.text !== 'string'
@@ -119,18 +131,20 @@ export class EvenTerminal {
     }
     const response = await this.api('messages', { signal, timeoutMs: 15000, query: { sessionId: binding.sessionId } });
     let matched = !binding.pending; let answer = ''; let latest; let lastTextId = 0;
+    const matchesPrompt = text => binding.pending?.plain ? String(text).trim() === binding.pending.question.trim()
+      : String(text).includes(binding.pending?.marker);
     const messages = response.messages || [];
     for (const m of messages) {
       if (binding.pending && m.id <= (binding.pending.cursor || 0)) continue;
       if (!binding.pending && m.id <= (binding.seenEventId || 0)) continue;
       if (m.type === 'user_prompt') {
-        if (binding.pending && matched && !String(m.text).includes(binding.pending.marker)) {
+        if (binding.pending && matched && (binding.pending.plain || !matchesPrompt(m.text))) {
           // A later question cannot invalidate this question's completed reply.
           // Keep its event cursor so the later turn can be checked separately.
           if (latest?.seenEventId != null) return peekResult(latest);
           return { kind: 'error', message: 'Another prompt arrived. Check the desktop session.' };
         }
-        matched = !binding.pending || String(m.text).includes(binding.pending.marker); answer = ''; lastTextId = 0; latest = undefined;
+        matched = !binding.pending || matchesPrompt(m.text); answer = ''; lastTextId = 0; latest = undefined;
       }
       if (!matched) continue;
       if (m.type === 'text_delta') { answer = (answer + (m.text || '')).slice(0, 16000); lastTextId = m.id; }
@@ -159,7 +173,7 @@ export class EvenTerminal {
   async submit(input, binding = {}, save, submissionSignal, progress = () => {}) {
     if (binding.pending) {
       if (!binding.sessionId || (await this.serverInfo(submissionSignal)).pageborne?.conversationSync !== 1) throw new Error('A previous question may still be running. Check its reply before sending another message.');
-      if (!binding.pending.submitted) {
+      if (!binding.pending.submitted || binding.pending.plain && binding.pending.question.trim() === input.question.trim()) {
         const conversation = await this.conversation(binding, submissionSignal);
         if (!conversation.turns.some(t => t.marker === binding.pending.marker)) throw new Error('The previous submission is unconfirmed. Check the desktop session before sending another message.');
       }
@@ -227,13 +241,25 @@ export class EvenTerminal {
     const sessionTitle = !binding.sessionId ? librarian ? 'Librarian' : paperSessionTitle(input.context.title) : undefined;
     const titleOptions = sessionTitle && (await this.serverInfo(submissionSignal).catch(() => null))?.pageborne?.sessionTitles === 1 ? { sessionTitle } : {};
     if (submissionSignal?.aborted) throw new Error('Question cancelled.');
-    const questionText = terminalSession ? terminalSessionQuestion(marker, input.question, input.context.platform) : librarian ? librarianQuestion(marker, input.question, input.context.platform) : attachment ? fileQuestion(marker, input, attachment, !binding.sessionId || binding.documentRevision !== attachment.revision || binding.documentFiles?.index !== attachment.index)
+    let priorTurnIds;
+    if (terminalSession) {
+      const conversation = await this.conversation(binding, submissionSignal);
+      if (conversation) {
+        if (binding.pending?.plain) this.onConversation(conversation);
+        priorTurnIds = [...new Set(conversation.turns.filter(turn => turn.question.trim() === input.question.trim())
+          .flatMap(turn => [turn.id, ...(turn.aliases || [])]))];
+        binding = { ...binding, sharedReplies: true };
+      }
+    }
+    if (submissionSignal?.aborted) throw new Error('Question cancelled.');
+    const questionText = terminalSession ? input.question : librarian ? librarianQuestion(marker, input.question, input.context.platform) : attachment ? fileQuestion(marker, input, attachment, !binding.sessionId || binding.documentRevision !== attachment.revision || binding.documentFiles?.index !== attachment.index)
       : `${marker}\n${instructionsForPlatform(instructions, input.context.platform)}\nThe reading context below is a fresh snapshot for this question. Its focus and position describe the reader's current place, which may differ from earlier questions. Answer as a reading companion. Do not edit files or run commands for this question.\n\n${inferenceInput({ ...input, history: [] }).map(m => m.content).join('\n\n')}`;
     // Stock Terminal derives names from the first prompt. Keep correlation
     // markers intact, but put the readable paper title ahead of them.
     const text = sessionTitle ? `${sessionTitle}\n\n${questionText}` : questionText;
     let next = { ...binding, cwd, ...(attachment ? { documentRevision: attachment.revision } : {}), documentFiles: attachment, reply: undefined, notification: undefined,
-      pending: { marker, cursor, started: Date.now(), turnId: input.turnId, question: input.question } }; save(next);
+      pending: { marker, cursor, started: Date.now(), turnId: input.turnId, question: input.question,
+        ...(terminalSession ? { plain: true, ...(priorTurnIds ? { priorTurnIds } : {}) } : {}) } }; save(next);
     // Once submitted, wait for the returned ID even if the reader leaves Ask.
     // Never automatically resend an ambiguous POST and create a second session.
     let response;

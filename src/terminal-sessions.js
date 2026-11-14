@@ -1,5 +1,4 @@
 import { paperConnectionKey } from './ask-connections.js';
-import { instructionsForPlatform } from '../ai/providers.js';
 import { byteLength, titleText, VISIBLE_LINES } from './native-text.js';
 
 export const TERMINAL_SESSIONS_ID = Symbol('terminal-sessions');
@@ -14,9 +13,6 @@ export function terminalSessionKey(config, id) {
   return JSON.stringify(key);
 }
 export const terminalSessionContext = session => ({ scope: 'terminal-session', title: label(session.title) || 'Even Terminal', passage: '' });
-export function terminalSessionQuestion(marker, question, platform) {
-  return instructionsForPlatform(`${marker}\nPageborne desktop session. Continue this existing conversation and the user's requested work using its existing tools and permissions. The user is reading this discussion on glasses and cannot follow links. Keep progress and replies readable on text-only glasses, with short paragraphs.\n\n${question}`, platform);
-}
 export async function listTerminalSessions(clientFor, signal) {
   const providers = ['claude', 'codex'];
   const results = await Promise.allSettled(providers.map(provider => clientFor(provider).sessions(signal)));

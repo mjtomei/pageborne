@@ -55,7 +55,7 @@ try {
     else if (u.pathname === '/api/prompt') {
       const body = route.request().postDataJSON(); prompts.push(body);
       assert(body.sessionId, 'must continue an existing owner');
-      // Deliberately emulate the old server returning our new wrapper raw.
+      // The desktop receives ordinary user text, with no Pageborne header.
       turns(provider, body.sessionId).push({ id: `new-${prompts.length}`, question: body.text, raw: body.text, answer: `Reply ${prompts.length}`, state: 'complete' });
       result = { sessionId: body.sessionId };
     } else if (u.pathname === '/api/events') { await route.fulfill({ contentType: 'text/event-stream', body: ': ready\n\n' }); return; }
@@ -114,6 +114,7 @@ try {
   await expect.poll(()=>page.evaluate(()=>window.__askUI.session.status)).toBe('answer');
   assert.equal(prompts[0].sessionId,'session-20'); assert.equal(prompts[0].provider,'codex');
   assert.deepEqual(Object.keys(prompts[0]).sort(),['provider','sessionId','text']); assert(!prompts[0].text.includes('Reading context'));
+  assert.equal(prompts[0].text,'Update todo.txt and agents.md.');
   await expect(page.locator('#ask-history')).toContainText('Update todo.txt and agents.md.');
   await expect(page.locator('#ask-session-model')).toHaveText('Session model: gpt-6-astra');
   await page.locator('#ask-question').fill('Draft for Codex');

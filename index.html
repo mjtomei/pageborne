@@ -43,8 +43,6 @@
           <p id="library-sync-help" class="muted">Use the replay button beside Library to sync the catalog with the shared desktop folder through Even Terminal. In the Even app, files download when opened and recent copies are cached for offline reading. In the glasses document picker, hold to sync. Select Librarian for a conversation across the shared library.</p>
           <p class="muted">Additions, edits and deletions transfer both ways. Conflicting edits keep both copies; previous synced versions remain in the desktop folder’s hidden .pageborne/history directory. Ask uses this same library. Stock Terminal needs the optional Pageborne library extension.</p>
         </div>
-        <p id="library-storage-status" role="status" class="muted" hidden></p>
-        <p id="library-sync-status" role="status" class="muted" hidden></p>
         <section id="imports" class="imports" aria-label="File imports" data-pending="0" hidden>
           <div class="imports-heading"><p id="import-status" role="status"></p><span class="imports-actions"><button id="imports-details" class="text-button" aria-expanded="true" aria-controls="import-jobs" hidden>Details</button><button id="clear-imports" class="text-button">Clear</button></span></div>
           <ul id="import-jobs" class="import-jobs"></ul>
@@ -67,6 +65,8 @@
           <p id="library-reading-combined-speed" class="muted"></p>
           <p id="library-reading-pending" class="muted" hidden></p>
         </footer>
+        <p id="library-sync-status" role="status" class="muted" hidden></p>
+        <p id="library-storage-status" role="status" class="muted" hidden></p>
         </div>
         <section id="shared-settings" class="pdf-controls settings-view" aria-labelledby="settings-heading" hidden>
             <div class="settings-head"><h2 id="settings-heading" tabindex="-1">Settings</h2><button id="settings-done" class="text-button">Done</button></div>
