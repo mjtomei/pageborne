@@ -20,6 +20,9 @@ import { ChatScrollbar } from './chat-scrollbar.js';
 import { MAX_QUESTION_CHARS } from './ask-limits.js';
 import { ASK_AGENTS, LATEST_CLAUDE_LABEL, sessionModelName, askScopeKey, askChatKey, defaultAskAgent, retainAskModels, askConfigFor } from './ask-models.js';
 import { safeTimeout as setTimeout, cancelTimeout as clearTimeout } from './timers.js';
+import { AskRecordings } from './ask-recordings.js';
+import { VERSION } from './diagnostics.js';
+import packageInfo from '../package.json' with { type: 'json' };
 
 const $ = id => document.getElementById(id);
 export class AskUI {
@@ -33,8 +36,16 @@ export class AskUI {
     this.sessionModels = new Map();
     this.bindingVersion = 0; this.linkVersions = new Map();
     this.session = new AskSession(() => { this.render(); changed(); });
+    this.recordings = new AskRecordings({ appVersion: VERSION, sttVersion: packageInfo.dependencies['@pageborne/browser-stt'], options: () => this.options(), changed: () => {
+      if (this.diagnostics) this.diagnostics.recordings = { enabled: this.recordings.enabled, status: this.recordings.status, queuedBytes: this.recordings.queuedBytes };
+      const label = $('ask-recording-status');
+      label.hidden = !this.recordings.enabled;
+      label.textContent = ['retrying', 'incomplete'].includes(this.recordings.status)
+        ? 'Recording upload delayed or incomplete. Ask can continue.' : 'Ask recordings are saved to your desktop for speech evaluation.';
+    } });
     const limit = () => this.release();
     const chunk = bytes => {
+      this.recordings.receive(bytes);
       if (bytes.length && this.voiceTiming?.generation === this.generation && this.voiceTiming.audioAt == null) {
         this.voiceTiming.audioAt = performance.now();
         this.diagnostics?.log('voice-startup', { stage: 'first-audio', ms: Math.round(this.voiceTiming.audioAt - this.voiceTiming.started) });
@@ -44,6 +55,11 @@ export class AskUI {
     this.mic = new AskMicrophone(audioControl, limit, chunk);
     this.phoneMic = new BrowserMicrophone(limit, chunk);
     this.speech = new SpeechUI({ read: readSpeech, save: saveSpeech, readVocabulary, saveVocabulary, readContextVocabulary, saveContextVocabulary, vocabularyContext: () => this.vocabularyContext(), changed: () => this.close(), diagnostics });
+    this.speech.observeTranscription = (id, audio, options) => {
+      const stream = this.stream.streams?.get(id), window = {};
+      for (const key of ['offset', 'length', 'base', 'completedEnd', 'windowSeconds', 'overlapSeconds', 'intervalMs', 'minAudioBytes', 'firstAudioBytes']) if (typeof stream?.[key] === 'number') window[key] = stream[key];
+      return this.recordings.decode(this.voiceRecording, id, audio, options, window);
+    };
     this.stream = this.speech.stream({ backlog: () => { void this.release(); },
       result: result => {
         if (!this.session.active || !this.session.review?.completing && !['starting', 'listening'].includes(this.session.status)) return;
@@ -167,6 +183,7 @@ export class AskUI {
   load() {
     this.speech.load();
     this.loadModels();
+    this.recordings.configure(this.configFor(this.snapshot().paperId));
     $('ask-connection-settings').hidden = $('ask-settings-link').hidden = $('ask-paper-directory-settings').hidden = this.automaticConnection;
     // The private build supplies the connection in memory. Do not copy its
     // token into hidden form fields or persist it as a phone preference.
@@ -374,6 +391,7 @@ export class AskUI {
           const terms = this.speech.vocabulary(context, history);
           // Keep the stream's shared vocabulary array: audio may already be arriving.
           this.dictationVocabulary.push(...terms);
+          this.recordings.hints(this.voiceRecording, this.dictationVocabulary, this.dictationFilenames);
         } catch (error) { this.speech.failure(error); }
       }, 0);
       // Phone microphone permissions must be requested in the user gesture.
@@ -382,6 +400,13 @@ export class AskUI {
       if (this.activeMic.stopping) await this.activeMic.stopping;
       if (generation !== this.generation) return;
       this.captureRequested = true;
+      this.recordings.configure(this.config);
+      this.voiceRecording = this.recordings.start({ source, backend: this.speech.backend, document: this.session.context?.title, reproduction: {
+        models: Object.values(this.speech.models.entries).map(e => e.model), streamOptions: this.stream.streamOptions,
+        confidence: this.stream.confidence, device: { userAgent: navigator.userAgent, platform: navigator.platform,
+          language: navigator.language, hardwareConcurrency: navigator.hardwareConcurrency, deviceMemory: navigator.deviceMemory },
+      } });
+      this.recordings.hints(this.voiceRecording, this.dictationVocabulary, this.dictationFilenames);
       await this.activeMic.start({ retainAudio: this.speech.backend === 'remote' });
       if (generation !== this.generation) return;
       this.diagnostics?.log('voice-startup', { stage: 'microphone-ready', ms: Math.round(performance.now() - started) });
@@ -389,19 +414,27 @@ export class AskUI {
       if (this.speech.backend === 'remote') this.recordingTimer = setTimeout(() => this.release(), 60000);
     } catch (error) {
       if (generation !== this.generation) return;
-      this.stream.cancel(); this.activeMic?.stop().catch(() => {}); this.session.fail(error);
+      this.stream.cancel(); const recording = this.voiceRecording;
+      this.activeMic?.stop().catch(() => {}).finally(() => this.recordings.cancel(recording)); this.session.fail(error);
     }
   }
   async release() {
     if (!this.session.active || !['starting', 'listening'].includes(this.session.status)) return;
     const generation = ++this.generation; clearTimeout(this.recordingTimer);
     const backend = this.speech.backend;
+    const recording = this.voiceRecording;
     const draft = backend !== 'remote' ? this.session.voiceDraft.trim() : '';
     this.session.voiceProgress = ''; this.transcription = new AbortController();
     this.reviewSpeech(draft, this.draftConfidence, true);
     try {
       if (!this.captureRequested) { this.emptyDictation(); return; }
       const audio = await this.activeMic.stop();
+      if (recording && audio instanceof Blob && audio.size > recording.bytes + 44 && !recording.lost) {
+        // Retained/remote-mode microphones include their final worklet flush in
+        // the WAV even when it was not forwarded to the streaming callback.
+        this.recordings.receive(new Uint8Array(await audio.slice(recording.bytes + 44).arrayBuffer()), recording);
+      }
+      this.recordings.stop(recording, audio.kind === 'pcm-stream' ? audio.bytes : audio.size - 44);
       if (generation !== this.generation) return;
       if ((audio.kind === 'pcm-stream' ? audio.bytes : audio.size - 44) < 3200) { this.emptyDictation(); return; }
       const rawResponse = backend === 'remote'
@@ -409,11 +442,13 @@ export class AskUI {
         : await this.stream.finish(audio, { signal: this.transcription.signal });
       if (generation !== this.generation) return;
       const response = formatSpokenFilenames(rawResponse, this.dictationFilenames);
+      this.recordings.recognition(recording, rawResponse, response.text, [...(this.stream.values || [])].map(([id, value]) => ({ id, ...value })));
       if (backend !== 'remote') this.speech.result(response);
       const question = String(response.text || '').trim();
       if (!question) { this.emptyDictation(); return; }
       this.reviewSpeech(question, response);
     } catch (error) {
+      this.recordings.failed(recording);
       if (generation !== this.generation) return;
       if (!this.session.review?.text && /^No speech was (recorded|recognized)\b/i.test(error.message)) { this.emptyDictation(); return; }
       this.stream.cancel();
@@ -440,7 +475,7 @@ export class AskUI {
     this.session.review.completing = completing; this.render(); this.changed();
   }
   cancelSpeechCompletion() { this.generation++; this.transcription?.abort(); this.stream.cancel(); }
-  cancelReview() { this.draftConfidence = null; this.cancelSpeechCompletion(); $('ask-question').value = ''; this.session.cancelReview(); this.resizeQuestion(); }
+  cancelReview() { this.recordings.cancel(this.voiceRecording); this.voiceRecording = null; this.draftConfidence = null; this.cancelSpeechCompletion(); $('ask-question').value = ''; this.session.cancelReview(); this.resizeQuestion(); }
   chooseReview() {
     if (this.session.review) this.submit(this.session.review.text);
   }
@@ -464,8 +499,13 @@ export class AskUI {
     const librarian = this.librarian, terminalSession = this.terminalSession;
     this.session.context = terminalSession ? terminalSessionContext(this.desktopSession) : librarian ? librarianContext() : askContext(current.layout, current.y, current.title, current.wordFrame);
     this.session.context.platform = current.platform || 'glasses';
-    this.cancelSpeechCompletion();
     const turnId = this.turnId = this.chat.begin(this.paperKey, question, this.session.context);
+    if (this.voiceRecording) {
+      if (!this.voiceRecording.metadata.recognition) this.recordings.recognition(this.voiceRecording, this.stream.latest, this.draftConfidence?.text,
+        [...(this.stream.values || [])].map(([id, value]) => ({ id, ...value })));
+      this.recordings.sent(this.voiceRecording, question, turnId, this.binding().sessionId); this.voiceRecording = null;
+    }
+    this.cancelSpeechCompletion();
     // Sending and reply completion do not navigate. Follow-ups from Ask
     // keep the conversation visible throughout.
     this.dictationReturn = null;
@@ -810,19 +850,23 @@ export class AskUI {
     else this.open();
   }
   cancelDictation() {
+    const recording = this.voiceRecording; this.voiceRecording = null;
     this.stream.cancel(); this.draftConfidence = null;
     this.generation++; clearTimeout(this.recordingTimer); this.transcription?.abort();
-    if (this.activeMic?.capturing || this.activeMic?.pending) this.activeMic.stop().catch(() => {});
+    if (this.activeMic?.capturing || this.activeMic?.pending || this.activeMic?.stopping) this.activeMic.stop().catch(() => {}).finally(() => this.recordings.cancel(recording));
+    else this.recordings.cancel(recording);
     $('ask-question').value = ''; this.session.voiceDraft = ''; this.session.review = null;
     this.session.restoreResponse();
   }
   close() {
+    const recording = this.voiceRecording; this.voiceRecording = null;
     this.glassesVisible = this.phoneVisible = false;
     this.dictationReturn = null;
     this.stream?.cancel();
     this.draftConfidence = null;
     this.generation++; clearTimeout(this.recordingTimer); this.transcription?.abort();
-    if (this.activeMic?.capturing || this.activeMic?.pending) this.activeMic.stop().catch(() => {});
+    if (this.activeMic?.capturing || this.activeMic?.pending || this.activeMic?.stopping) this.activeMic.stop().catch(() => {}).finally(() => this.recordings.cancel(recording));
+    else this.recordings.cancel(recording);
     if (this.session.active && this.paperKey) {
       this.modelDrafts.set(this.paperKey, $('ask-question').value);
       if (this.session.status === 'thinking' && !this.binding().pending && !this.deliveries.has(this.paperKey)) this.chat.update(this.paperKey, this.turnId, this.session.answer, 'interrupted');

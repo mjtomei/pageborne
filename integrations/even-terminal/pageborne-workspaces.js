@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { installPaperFiles } from './pageborne-files.js';
 import { installLibrarySync } from './pageborne-library.js';
+import { installSpeechRecordings, speechRecordingCapabilities } from './pageborne-speech-recordings.js';
 
 export const DEFAULT_PAPER_BASE = '~/.pageborne/papers';
 export function expandPaperBase(value = DEFAULT_PAPER_BASE, home = homedir()) {
@@ -34,10 +35,11 @@ export async function paperWorkspace({ paperId, title, baseDir, workspaceId }, {
 
 // Mount on the existing authenticated /api router. This module does not listen,
 // proxy requests, start an agent, or change the standard prompt/cwd contract.
-export const workspaceCapabilities = () => ({ workspaces: 1, documents: 1, documentWorkspaces: 1, librarySync: 1, documentSnapshots: 1 });
+export const workspaceCapabilities = () => ({ workspaces: 1, documents: 1, documentWorkspaces: 1, librarySync: 1, documentSnapshots: 1, ...speechRecordingCapabilities() });
 export function installPaperWorkspaces(router, options = {}) {
   installPaperFiles(router, options);
   installLibrarySync(router, options);
+  installSpeechRecordings(router);
   router.post('/pageborne/workspace', async (req, res) => {
     try { res.json(await paperWorkspace(req.body || {}, { defaultBase: process.env.PAGEBORNE_PAPER_BASE || DEFAULT_PAPER_BASE, ...options })); }
     catch { res.status(400).json({ error: 'Could not create the session directory. Check the base directory and desktop permissions.' }); }

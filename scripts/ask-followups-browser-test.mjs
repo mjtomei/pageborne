@@ -17,7 +17,7 @@ try {
       ...(engine === chromium ? { args: ['--disable-gpu', '--js-flags=--max-old-space-size=384'] } : {}) });
     const page = await browser.newPage({ viewport: { width: 440, height: 806 } });
     const report = { engine: engine.name(), errors: [], passed: false }; reports.push(report);
-    const storage = new Map(), prompts = [], sessions = new Map(); let serial = 0, gate, rejectNext = false, conflict, rejectedPrompt;
+    const storage = new Map(), prompts = [], sessions = new Map(), recordings = new Map(); let serial = 0, gate, rejectNext = false, conflict, rejectedPrompt;
     page.on('pageerror', e => report.errors.push(e.message));
     try {
       await page.exposeFunction('__storage', ({ method, data }) => {
@@ -44,7 +44,14 @@ try {
         if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
         const json = value => route.fulfill({ headers, json: value });
         const id = url.searchParams.get('sessionId'), saved = sessions.get(id);
-        if (url.pathname === '/api/info') return json({ pageborne: { conversationSync: 1 } });
+        if (url.pathname === '/api/info') return json({ pageborne: { conversationSync: 1, speechRecordings: 1 } });
+        if (url.pathname.startsWith('/api/pageborne/speech-recordings/')) {
+          const [id, kind, part] = url.pathname.split('/').slice(4), body = req.postDataJSON();
+          const recording = recordings.get(id) || { parts: new Map() }; recordings.set(id, recording);
+          if (kind === 'chunks') recording.parts.set(part, body.pcm);
+          else if (!recording.revision || body.revision > recording.revision) Object.assign(recording, body);
+          return json({ ok: true });
+        }
         if (url.pathname === '/api/events') return route.fulfill({ headers, contentType: 'text/event-stream', body: ': connected\n\n' });
         if (url.pathname.endsWith('/history')) return json({ history: [] });
         if (req.method() === 'GET' && ['/api/pageborne/library', '/api/pageborne/library/activity', '/api/pageborne/reading-activity'].includes(url.pathname)) return route.fulfill({ status: 404, headers, json: {} });
@@ -220,9 +227,39 @@ try {
       await expect(page.locator('#ask-messages')).toContainText('Late original reply');
       await expect(page.locator('#ask-blocked-submission')).toBeHidden();
       assert.equal(prompts.length, 9);
+      // One physical dictation, including the final microphone flush, yields
+      // one recording ID. Model passes only contribute companion metadata.
+      await expect.poll(() => page.evaluate(() => window.__askUI.recordings.enabled)).toBe(true);
+      await page.evaluate(() => {
+        const ui = window.__askUI;
+        ui.stream.start = () => {}; ui.stream.cancel = () => {};
+        ui.stream.finish = async () => ({ text: 'Captured spoken question', words: [], seconds: .2, transcribeMs: 1 });
+        ui.mic.start = async () => { ui.mic.capturing = true; ui.mic.onChunk(new Uint8Array(3200).fill(1)); };
+        ui.mic.stop = async () => { ui.mic.capturing = false; ui.mic.onChunk(new Uint8Array(3200).fill(2)); return { kind: 'pcm-stream', bytes: 6400 }; };
+        ui.speech.models.transcribe = async () => ({ text: 'Captured spoken question', transcribeMs: 1 });
+      });
+      await page.locator('#ask-voice').click(); await expect.poll(state).toBe('listening');
+      const recordingId = await page.evaluate(async () => {
+        const ui = window.__askUI;
+        await ui.speech.transcribe('conformer', new Blob([new Uint8Array(3200)]), { vocabulary: ['Licklider'], partial: true });
+        await ui.speech.transcribe('zipformer', new Blob([new Uint8Array(3200)]), { vocabulary: ['Licklider'], partial: true });
+        return ui.voiceRecording.id;
+      });
+      await page.locator('#ask-voice').click(); await expect.poll(state).toBe('review');
+      await page.locator('#ask-send').click(); await expect.poll(() => prompts.length).toBe(10);
+      finish(9, 'Recording fixture reply');
+      await expect.poll(() => recordings.get(recordingId)?.metadata?.sentText).toBe('Captured spoken question');
+      const captured = recordings.get(recordingId);
+      assert.equal(captured.metadata.capture.complete, true); assert.equal(captured.metadata.capture.bytes, 6400);
+      assert.equal(captured.parts.size, 1); const pcm = Buffer.from(captured.parts.get('0'), 'base64');
+      assert.deepEqual(pcm, Buffer.concat([Buffer.alloc(3200, 1), Buffer.alloc(3200, 2)]));
+      assert.deepEqual(captured.metadata.reproduction.dictionaries, [['Licklider']]);
+      assert.equal(captured.metadata.reproduction.decodes.length, 2);
+      assert.equal(captured.metadata.reference, undefined);
       assert.deepEqual(report.errors, []);
       Object.assign(report, { passed: true, prompts: prompts.length, oneSession: true, busyFollowups: true, voiceDuringReply: true, rejectedFollowupRecovered: true, modelSwitch: true, reload: true, glassesFollowupPosition: true, glassesHistoryBackfillPosition: true,
-        disconnectedRejection: true, legacyPendingCleared: true, stalePollIgnored: true, lateReplyRecovered: true, noAutomaticResend: true });
+        disconnectedRejection: true, legacyPendingCleared: true, stalePollIgnored: true, lateReplyRecovered: true, noAutomaticResend: true,
+        oneRecordingPerDictation: true, finalMicrophoneFlushSaved: true, dictionariesAndDecodesSaved: true });
       await page.screenshot({ path: `${out}/${engine.name()}.png`, fullPage: true });
     } catch (e) { report.failure = e.stack; console.error(await page.evaluate(() => ({ status: window.__askUI?.session.status, error: window.__askUI?.session.error, turns: window.__askUI?.chat.turns(window.__askUI.paperKey) }))); await page.screenshot({ path: `${out}/${engine.name()}-failure.png` }); throw e; }
     finally { await browser.close(); }

@@ -49,7 +49,11 @@ export class SpeechUI {
     const vocabulary = vocabularyWords(options.vocabulary || []);
     this.lastVocabulary = { terms: vocabulary, at: new Date().toLocaleTimeString() };
     if (this.vocabularyDialog.open) this.renderLastVocabulary();
-    return this.models.transcribe(id, audio, { ...options, vocabulary });
+    let observed;
+    try { observed = this.observeTranscription?.(id, audio, { ...options, vocabulary }); } catch { /* Collection never blocks recognition. */ }
+    return this.models.transcribe(id, audio, { ...options, vocabulary }).then(result => {
+      try { observed?.(result); } catch { /* Optional collection only. */ } return result;
+    }, error => { try { observed?.(null, error); } catch {} throw error; });
   }
   setStorage(kv) { this.storage.configure(kv); }
   async releaseForReading() {

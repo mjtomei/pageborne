@@ -4,7 +4,7 @@ Stock Even Terminal works without this extension. Pageborne defaults to normal n
 
 This extension adds paper file transfer and optional automatic session folders to a custom server. It is part of that server process, with the same port, HTTPS transport, CORS and pairing-token authentication. It neither starts agents nor changes the standard prompt/cwd behavior. The local shared-session fork includes it; stock packages are untouched.
 
-Copy `pageborne-workspaces.js`, `pageborne-files.js`, `pageborne-library.js` and `pageborne-session-titles.js` alongside `dist/routes/core.js`. In that router:
+Copy the integration's `pageborne-*.js` modules alongside `dist/routes/core.js`. In that router:
 
 ```js
 import { installPaperWorkspaces, workspaceCapabilities } from './pageborne-workspaces.js';
@@ -19,6 +19,18 @@ res.json({ ...info, pageborne: workspaceCapabilities() });
 ```
 
 Keep that router behind the server's existing `/api` authentication middleware. Restart the Terminal server to load the extension. No new dependency, service, token, or listener is needed.
+
+### Ask recordings for speech evaluation
+
+Collection is **off by default**. To enable it on your own desktop, create `pageborne-speech.json` in the private directory specified by `EVEN_TERMINAL_STATE_DIR`, with owner-only permissions and the contents `{"recordings":true}`, then restart only the HTTP bridge. Remove the setting and restart to disable it. `/api/info` advertises `pageborne.speechRecordings: 1` only when opted in. Pageborne shows the collection notice in the phone Ask window. Existing native agent sessions are unaffected.
+
+One spoken input has one UUID and becomes `~/.pageborne/speech-recordings/<uuid>/audio.wav`: mono 16 kHz, signed 16-bit PCM. Audio arrives in parts of at most 256,000 bytes, but repeated recognition passes do not upload separate recordings. Matching retries are idempotent; complete WAVs replace temporary PCM parts. The companion `record.json` keeps part hashes and metadata revisions for restart/retry recovery. Directories are private (0700), files 0600. Recordings are outside the library and diagnostic exports.
+
+The metadata includes app and pinned STT versions, model manifests and file SHA-256s, microphone source, backend, device/browser details, start/end times, capture completeness, suggested vocabulary and filenames, normalized dictionaries used at dispatch, per-model decoding options/window positions/timing, phone hypotheses, formatted text and submitted text. `outcome: "sent"` means submitted in the UI, not confirmed delivery to an agent. Discarded and failed dictations retain their outcome too. Predictions are never gold labels: `reference` remains null. No stronger desktop transcription or external transcription service is invoked by collection.
+
+The authenticated routes are `POST /api/pageborne/speech-recordings/:id/chunks/:index` with `{pcm: base64}` and `POST /api/pageborne/speech-recordings/:id` with `{revision, metadata}`. Metadata revisions increase monotonically. The phone uses an 8 MiB memory queue and retries temporary failures for up to ten minutes; closing the app can lose queued data. Nothing is stored in Even/phone persistent storage. Missing audio is flagged incomplete. Intermediate outputs can be omitted with `reproduction.truncated` set; the single audio capture and final text take priority over exact replay of every pass. These snapshots support later reproduction but do not guarantee identical device scheduling or floating-point results.
+
+Limits are ten minutes of audio per input, 1 MB of metadata, 10 GiB total desktop collection and a 1 GiB free-disk reserve. Full collection storage rejects new writes without blocking Ask. Files are not automatically deleted; archive or remove them on the desktop as needed, then restart the bridge to refresh its storage accounting. No additional listener or token is created.
 
 ### Paper session names
 

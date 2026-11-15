@@ -94,7 +94,7 @@ export class Diagnostics {
     if (!this.enabled) return { version: VERSION, enabled: false };
     return { version: VERSION, renderer: this.renderer || 'native-text', startedAt: this.startedAt, active: this.active,
       userAgent: globalThis.navigator?.userAgent || 'test', environment: environment(),
-      pdf: this.pdf || null, ask: this.ask || null, speech: this.speech || null, display: this.display || null, library: this.library || null, errors: this.errors,
+      pdf: this.pdf || null, ask: this.ask || null, speech: this.speech || null, recordings: this.recordings || null, display: this.display || null, library: this.library || null, errors: this.errors,
       counts: { ...this.counts }, events: this.events.slice(-limit),
       unfinishedSetups: this.unfinishedSetups,
       previousRun: this.previous ? { version: this.previous.version, startedAt: this.previous.startedAt, active: this.previous.active, pdf: this.previous.pdf,
