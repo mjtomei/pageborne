@@ -317,6 +317,54 @@ test('pending permissions are left for the desktop, and an interrupted result st
   assert.match(progress[0], /desktop/); assert.equal(calls, 2);
 });
 
+test('a disconnected native Claude rejection releases the unsent prompt without losing its session or resending', async () => {
+  const original = { sessionId: 'existing', cwd: '/reading', documentRevision: 'revision', reply: { answer: 'Earlier reply' } };
+  let binding = original, posts = 0;
+  const client = new EvenTerminal({ ...config, agent: 'claude' }, { fetcher: async url => {
+    const path = new URL(url).pathname;
+    if (path.endsWith('/history')) return Response.json({ history: [] });
+    if (path.endsWith('/messages')) return Response.json({ state: 'idle', messages: [] });
+    assert(path.endsWith('/prompt')); posts++;
+    return Response.json({ error: 'Claude Remote Control is disconnected. Reconnect the normal Claude session before sending.' }, { status: 409 });
+  } });
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await assert.rejects(client.submit(input, binding, next => { binding = next; }), error => error.submissionRejected && /not sent/.test(error.message));
+    assert.deepEqual(binding, original); assert.equal(posts, attempt, 'only the explicit submit attempts POST');
+  }
+});
+
+test('unknown, oversized, or lost rejection responses remain unconfirmed and cannot be resent automatically', async () => {
+  for (const response of [
+    () => Response.json({ error: 'private unknown conflict' }, { status: 409 }),
+    () => Response.json({ error: 'Claude Remote Control: private upstream conflict' }, { status: 409 }),
+    () => Response.json({ error: 'x'.repeat(3000) }, { status: 409 }),
+    () => new Response('private broken JSON', { status: 409, headers: { 'content-type': 'application/json' } }),
+    () => { throw new TypeError('lost acknowledgement'); },
+  ]) {
+    let binding = { sessionId: 'existing' }, posts = 0;
+    const client = new EvenTerminal(config, { fetcher: async url => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/info')) return Response.json({ pageborne: { conversationSync: 1 } });
+      if (path.endsWith('/history')) return Response.json({ history: [] });
+      if (path.endsWith('/messages')) return Response.json({ state: 'idle', messages: [] });
+      if (path.endsWith('/conversation')) return Response.json({ version: 1, sessionId: 'existing', state: 'idle', turns: [] });
+      assert(path.endsWith('/prompt')); posts++; return response();
+    } });
+    await assert.rejects(client.submit(input, binding, next => { binding = next; }), e => !e.submissionRejected && !e.message.includes('private'));
+    assert(binding.pending); assert(!binding.pending.submitted);
+    await assert.rejects(client.submit(input, binding, () => assert.fail('No mutation on a blocked retry')), /unconfirmed/);
+    assert.equal(posts, 1);
+  }
+});
+
+test('native pre-send rejection classification is limited to prompt POSTs and exact conflict messages', async () => {
+  const payload = { error: 'Claude Remote Control is disconnected. Reconnect the normal Claude session before sending.' };
+  for (const options of [{}, { body: {} }, { terminalPrompt: true }]) {
+    await assert.rejects(connectionRequest('https://terminal.example/api/prompt', { ...options, fetcher: async () => Response.json(payload, { status: 409 }) }), e => !e.submissionRejected);
+  }
+  await assert.rejects(connectionRequest('https://terminal.example/api/prompt', { body: {}, terminalPrompt: true, fetcher: async () => Response.json(payload, { status: 503 }) }), e => !e.submissionRejected);
+});
+
 
 test('default stock behavior omits cwd; an existing directory override is passed only for new sessions', async () => {
   const mock = mockTerminal(); let binding;

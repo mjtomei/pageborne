@@ -24,7 +24,7 @@ export class EvenTerminal {
   }
   api(route, { query = {}, ...options } = {}) {
     const search = new URLSearchParams({ provider: this.config.agent, ...query });
-    return connectionRequest(`${this.config.endpoint}/api/${route}?${search}`, { token: this.config.token, fetcher: this.fetcher, ...options, headers: { ...terminalHeaders(this.config.endpoint), ...options.headers } })
+    return connectionRequest(`${this.config.endpoint}/api/${route}?${search}`, { token: this.config.token, fetcher: this.fetcher, ...options, terminalPrompt: route === 'prompt', headers: { ...terminalHeaders(this.config.endpoint), ...options.headers } })
       .catch(error => { this.connectionError(route, options.body === undefined ? 'GET' : 'POST', error); throw error; });
   }
   connectionError(route, method, error, details = {}) {
@@ -175,7 +175,7 @@ export class EvenTerminal {
       if (!binding.sessionId || (await this.serverInfo(submissionSignal)).pageborne?.conversationSync !== 1) throw new Error('A previous question may still be running. Check its reply before sending another message.');
       if (!binding.pending.submitted || binding.pending.plain && binding.pending.question.trim() === input.question.trim()) {
         const conversation = await this.conversation(binding, submissionSignal);
-        if (!conversation.turns.some(t => t.marker === binding.pending.marker)) throw new Error('The previous submission is unconfirmed. Check the desktop session before sending another message.');
+        if (!conversation.turns.some(t => t.marker === binding.pending.marker)) throw new Error('The previous submission is unconfirmed. Check the desktop session, or use Clear blocked submission to stop waiting without resending.');
       }
       binding = { ...binding, sharedReplies: true };
     }
@@ -265,7 +265,7 @@ export class EvenTerminal {
     let response;
     try { response = await this.api('prompt', { body: { text, provider: this.config.agent, ...titleOptions, ...(binding.sessionId ? { sessionId: binding.sessionId } : cwd ? { cwd } : {}) } }); }
     catch (error) {
-      if ([400, 401, 403, 404, 429].includes(error.status)) save(binding);
+      if (error.submissionRejected || [400, 401, 403, 404, 429].includes(error.status)) save(binding);
       else save({ ...next, notification: 'error' });
       throw error;
     }

@@ -117,6 +117,7 @@ export class AskUI {
     $('ask-paper-cwd').onchange = () => this.setPaperDirectory();
     $('ask-paper-cwd').oninput = () => $('ask-paper-cwd').setCustomValidity('');
     $('ask-check-reply').onclick = () => this.checkReply();
+    $('ask-clear-submission').onclick = () => this.clearBlockedSubmission();
     $('ask-footer').onclick = () => { if (this.open({ showConversation: false })) this.reveal(); };
     this.documentVoiceHelp = $('ask-voice-help').textContent;
     this.load(); this.render();
@@ -779,6 +780,23 @@ export class AskUI {
     await this.session.send('Check the previous reply', (_body, signal, progress) => this.replyClient(key, config, signal).reply(binding, save, signal, progress), { resume: true });
     if (this.session.active && this.paperKey === key && this.session.status === 'answer' && this.glassesVisible) this.acknowledgeReply();
   }
+  clearBlockedSubmission() {
+    const key = this.paperKey, binding = this.binding(), pending = binding.pending;
+    if (!this.session.active || connectionMode(this.config) !== 'terminal' || !pending || pending.submitted
+      || this.deliveries.has(key) || this.session.dialog()) return;
+    // Explicitly release only the local wait. Keep the original marker/history
+    // so a late desktop reply still merges into the same turn. Never resend.
+    this.linkVersions.set(key, (this.linkVersions.get(key) || 0) + 1);
+    this.session.generation++; this.session.abort?.abort(); this.session.abort = null;
+    const turnId = this.chat.reconcile(key, binding);
+    const turn = this.chat.turns(key).find(t => t.id === turnId);
+    this.chat.update(key, turnId, turn?.answer || '', 'error');
+    this.replyViews.delete(key);
+    this.saveBinding(key, { ...binding, pending: undefined, notification: undefined, idleCandidate: undefined });
+    this.session.responseStatus = 'ready'; this.session.responseError = null;
+    this.session.progressText = ''; this.session.setStatus('ready');
+    void this.pollFooter();
+  }
   returnToReading() {
     if (!this.session.active) return;
     if (this.terminalSession) { const session = this.desktopSession; this.close(); this.returnToSessions(session); return; }
@@ -872,6 +890,8 @@ export class AskUI {
     if (!s.active) return;
     this.resizeQuestion();
     const desktop = connectionMode(this.config) === 'terminal'; const binding = this.binding();
+    $('ask-blocked-submission').hidden = !desktop || !binding.pending || !!binding.pending.submitted
+      || this.deliveries.has(this.paperKey) || !!s.dialog();
     $('ask-chat-model-field').hidden = !desktop || this.terminalSession;
     $('ask-chat-model').value = this.config.agent || '';
     $('ask-chat-model').disabled = this.terminalSession || !!s.dialog();

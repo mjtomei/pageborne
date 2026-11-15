@@ -12,11 +12,12 @@ const out = 'test-results/ask-followups'; await mkdir(out, { recursive: true });
 const vite = await createServer({ plugins: [displayProbe()], cacheDir: '.state/vite-ask-followups', server: { host: '127.0.0.1', port: 0, hmr: false, watch: null }, clearScreen: false });
 await vite.listen(); const reports = [];
 try {
-  for (const engine of [chromium, webkit]) {
-    const browser = await engine.launch({ headless: true, executablePath: engine === chromium ? '/usr/bin/google-chrome' : process.env.WEBKIT_PATH });
+  for (const engine of (process.env.ASK_BROWSER === 'chromium' ? [chromium] : [chromium, webkit])) {
+    const browser = await engine.launch({ headless: true, executablePath: engine === chromium ? '/usr/bin/google-chrome' : process.env.WEBKIT_PATH,
+      ...(engine === chromium ? { args: ['--disable-gpu', '--js-flags=--max-old-space-size=384'] } : {}) });
     const page = await browser.newPage({ viewport: { width: 440, height: 806 } });
     const report = { engine: engine.name(), errors: [], passed: false }; reports.push(report);
-    const storage = new Map(), prompts = [], sessions = new Map(); let serial = 0, gate, rejectNext = false;
+    const storage = new Map(), prompts = [], sessions = new Map(); let serial = 0, gate, rejectNext = false, conflict, rejectedPrompt;
     page.on('pageerror', e => report.errors.push(e.message));
     try {
       await page.exposeFunction('__storage', ({ method, data }) => {
@@ -46,11 +47,16 @@ try {
         if (url.pathname === '/api/info') return json({ pageborne: { conversationSync: 1 } });
         if (url.pathname === '/api/events') return route.fulfill({ headers, contentType: 'text/event-stream', body: ': connected\n\n' });
         if (url.pathname.endsWith('/history')) return json({ history: [] });
+        if (req.method() === 'GET' && ['/api/pageborne/library', '/api/pageborne/library/activity', '/api/pageborne/reading-activity'].includes(url.pathname)) return route.fulfill({ status: 404, headers, json: {} });
         if (url.pathname === '/api/pageborne/reader-state') return route.fulfill({ status: 404, headers, json: {} });
         if (url.pathname === '/api/pageborne/conversation') return json({ version: 1, sessionId: id, state: saved.state, turns: saved.turns });
         if (url.pathname === '/api/messages') return json({ state: saved.state, messages: saved.messages });
         if (url.pathname === '/api/prompt') {
           const body = req.postDataJSON();
+          if (conflict) {
+            const error = conflict; conflict = null; rejectedPrompt = body;
+            return route.fulfill({ status: 409, headers, json: { error } });
+          }
           if (rejectNext) { rejectNext = false; return route.fulfill({ status: 400, headers, json: { error: 'Fixture rejection' } }); }
           const sessionId = body.sessionId || `session-${++serial}`;
           if (!sessions.has(sessionId)) sessions.set(sessionId, { turns: [], messages: [], state: 'idle' });
@@ -164,8 +170,59 @@ try {
       finish(6, 'Claude first answer'); finish(7, 'Claude spoken answer');
       await expect(page.locator('#ask-messages')).toContainText('Claude first answer'); await expect(page.locator('#ask-answer')).toHaveText('Claude spoken answer');
       await expect(page.locator('#ask-messages')).not.toContainText('Codex two');
+      // A native pre-send rejection is retryable without changing the session.
+      conflict = 'Claude Remote Control is disconnected. Reconnect the normal Claude session before sending.';
+      await send('Rejected while disconnected');
+      await expect(page.locator('#ask-status')).toContainText('Your question was not sent');
+      assert.equal(await page.evaluate(() => !!window.__askUI.binding().pending), false);
+      assert.equal(await page.evaluate(() => window.__askUI.binding().sessionId), prompts[6].sessionId);
+      assert.equal(prompts.length, 8);
+      // Old versions retained a pending question on 409. An unknown conflict
+      // recreates that persisted shape without pretending absence proves safety.
+      conflict = 'Unknown conflict';
+      await send('Unconfirmed question'); await expect.poll(state).toBe('error');
+      await expect(page.locator('#ask-clear-submission')).toBeVisible();
+      const uncertain = { ...rejectedPrompt };
+      await send('Attempt while blocked');
+      await expect(page.locator('#ask-status')).toContainText('previous submission is unconfirmed');
+      assert.equal(prompts.length, 8);
+      await page.reload(); await expect(page.locator('#import')).toBeEnabled();
+      await showLibrary(page); await page.locator('[data-document-id="followups.md"] .document-card').click(); await page.locator('#ask-open').click();
+      await expect(page.locator('#ask-clear-submission')).toBeVisible();
+      await page.evaluate(() => {
+        const ui = window.__askUI;
+        window.__staleBinding = ui.binding(); window.__staleSave = ui.bindingWriter(ui.paperKey);
+      });
+      await page.screenshot({ path: `${out}/${engine.name()}-blocked-440.png` });
+      await page.setViewportSize({ width: 320, height: 700 });
+      await expect(page.locator('#ask-clear-submission')).toBeInViewport();
+      await page.screenshot({ path: `${out}/${engine.name()}-blocked-320.png` });
+      await page.setViewportSize({ width: 440, height: 806 });
+      await page.locator('#ask-clear-submission').click();
+      await expect(page.locator('#ask-blocked-submission')).toBeHidden();
+      await expect(page.locator('#ask-messages')).toContainText('Claude first answer');
+      await expect(page.locator('#ask-messages')).toContainText('Unconfirmed question');
+      await page.evaluate(() => window.__staleSave(window.__staleBinding));
+      assert.equal(await page.evaluate(() => !!window.__askUI.binding().pending), false, 'stale polling cannot restore the cleared block');
+      assert.equal(prompts.length, 8, 'clearing never resends');
+      await send('New question after clearing'); await expect.poll(() => prompts.length).toBe(9);
+      assert.equal(prompts[8].sessionId, prompts[6].sessionId);
+      finish(8, 'Recovered in the original session');
+      await expect(page.locator('#ask-messages')).toContainText('Recovered in the original session');
+      // A late reply remains recoverable and deduplicates with the retained turn.
+      const marker = uncertain.text.match(/Pageborne question [\w-]+/)[0];
+      sessions.get(uncertain.sessionId).turns.push({ id: marker, marker, question: 'Unconfirmed question', answer: 'Late original reply', state: 'complete' });
+      await page.evaluate(() => window.__askUI.pollFooter());
+      await expect(page.locator('#ask-messages')).toContainText('Late original reply');
+      assert.equal((await turns()).filter(t => t.question === 'Unconfirmed question').length, 1);
+      await page.reload(); await expect(page.locator('#import')).toBeEnabled();
+      await showLibrary(page); await page.locator('[data-document-id="followups.md"] .document-card').click(); await page.locator('#ask-open').click();
+      await expect(page.locator('#ask-messages')).toContainText('Late original reply');
+      await expect(page.locator('#ask-blocked-submission')).toBeHidden();
+      assert.equal(prompts.length, 9);
       assert.deepEqual(report.errors, []);
-      Object.assign(report, { passed: true, prompts: prompts.length, oneSession: true, busyFollowups: true, voiceDuringReply: true, rejectedFollowupRecovered: true, modelSwitch: true, reload: true, glassesFollowupPosition: true, glassesHistoryBackfillPosition: true });
+      Object.assign(report, { passed: true, prompts: prompts.length, oneSession: true, busyFollowups: true, voiceDuringReply: true, rejectedFollowupRecovered: true, modelSwitch: true, reload: true, glassesFollowupPosition: true, glassesHistoryBackfillPosition: true,
+        disconnectedRejection: true, legacyPendingCleared: true, stalePollIgnored: true, lateReplyRecovered: true, noAutomaticResend: true });
       await page.screenshot({ path: `${out}/${engine.name()}.png`, fullPage: true });
     } catch (e) { report.failure = e.stack; console.error(await page.evaluate(() => ({ status: window.__askUI?.session.status, error: window.__askUI?.session.error, turns: window.__askUI?.chat.turns(window.__askUI.paperKey) }))); await page.screenshot({ path: `${out}/${engine.name()}-failure.png` }); throw e; }
     finally { await browser.close(); }
