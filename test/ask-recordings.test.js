@@ -110,3 +110,13 @@ test('failed audio upload is marked incomplete even after its metadata saves', a
   assert.equal(record.metadata.capture.complete, false); assert.equal(record.audio, undefined);
   assert.equal(archive.status, 'incomplete');
 });
+test('changing the paired destination clears the old retry timer and resumes collection', async t => {
+  const { root, archive } = await fixture(t);
+  archive.client.api = async () => { throw Object.assign(new Error('offline'), { status: 503 }); };
+  archive.start({ source: 'phone' }); archive.receive(new Uint8Array(256000));
+  await new Promise(resolve => setTimeout(resolve, 0)); assert(archive.retryTimer);
+  archive.configure({ ...config, endpoint: 'https://new-recordings.test' }); await archive.ready;
+  assert.equal(archive.retryTimer, null);
+  const r = archive.start({ source: 'phone' }); archive.receive(new Uint8Array(3200)); archive.stop(r, 3200); await wait(archive);
+  assert.equal((await readFile(path.join(root, r.id, 'audio.wav'))).length, 3244);
+});

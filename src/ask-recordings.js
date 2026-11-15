@@ -17,9 +17,9 @@ export class AskRecordings {
     const identity = JSON.stringify([config.mode, config.endpoint, config.token]);
     if (identity === this.identity) return;
     this.identity = identity; this.enabled = false; this.client = null; this.incomplete = false;
-    this.cancel(); this.jobs = []; this.queuedBytes = 0; cancelTimeout(this.retryTimer);
-    if (config.mode !== 'terminal' || !config.endpoint || !config.token) { this.status = 'off'; return; }
-    let client; try { client = new EvenTerminal(config, this.options()); } catch { this.status = 'unavailable'; this.identity = null; return; }
+    this.cancel(); this.jobs = []; this.queuedBytes = 0; cancelTimeout(this.retryTimer); this.retryTimer = null;
+    if (config.mode !== 'terminal' || !config.endpoint || !config.token) { this.status = 'off'; this.changed(); return; }
+    let client; try { client = new EvenTerminal(config, this.options()); } catch { this.status = 'unavailable'; this.identity = null; this.changed(); return; }
     this.ready = client.serverInfo().then(info => {
       if (this.identity !== identity) return;
       this.enabled = info.pageborne?.speechRecordings === 1; this.client = this.enabled ? client : null;
