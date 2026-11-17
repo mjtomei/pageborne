@@ -405,7 +405,7 @@ export class GlassesDisplay {
     if (this.lastFrame) this.submit(this.lastFrame);
   }
   handleEvent(event, source = 'glasses') {
-    if (event.audioEvent?.audioPcm) this.onAudio(event.audioEvent.audioPcm);
+    if (event.audioEvent?.audioPcm) this.onAudio(event.audioEvent.audioPcm, event.audioEvent.source);
     const action = actionForEvent(event);
     if (!action) return;
     this.diagnostics.log('gesture', { action, source });

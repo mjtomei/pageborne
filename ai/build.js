@@ -8,8 +8,9 @@ export function askOrigins(value = process.env.PAGEBORNE_ASK_ORIGINS || '') {
 export function askManifest(manifest, origins = askOrigins(), modelOrigins = []) {
   const whitelist = [...new Set([...origins, ...modelOrigins])];
   return { ...manifest, permissions: [
-    ...manifest.permissions.filter(p => !['network', 'g2-microphone'].includes(p.name)),
+    ...manifest.permissions.filter(p => !['network', 'g2-microphone', 'phone-microphone'].includes(p.name)),
     { name: 'g2-microphone', desc: 'Records a spoken question when you hold to ask or tap the microphone.' },
+    { name: 'phone-microphone', desc: 'Records a spoken question when you hold to talk on the phone reading screen.' },
     ...(whitelist.length ? [{ name: 'network', desc: 'Downloads on-device speech models; sends questions to your chosen AI connection and recordings only to a configured speech provider.', whitelist }] : []),
   ] };
 }

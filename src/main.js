@@ -170,7 +170,7 @@ function setConnection(text) {
 }
 const glasses = new GlassesDisplay({ diagnostics, onStatus: text => {
   setConnection(text); lastSentKey = ''; dirty = true;
-}, onAction: dispatchAction, onAudio: bytes => askUI?.mic.receive(bytes), onAccepted: frame => {
+}, onAction: dispatchAction, onAudio: (bytes, source) => askUI?.receiveAudio(bytes, source), onAccepted: frame => {
   if (!glasses.suspended) askUI?.acceptFrame(frame);
   // Wake again once the whole transfer releases the display lane.
   if (reader.playing && ['auto', 'speed'].includes(reader.mode)) scheduleAnimation();
@@ -215,9 +215,9 @@ askUI = new AskUI({
     savePreferences(); await phonePreferences?.flush();
   },
   paperIdentity: key => { preferences.askPaperIds ||= {}; if (!preferences.askPaperIds[key]) { preferences.askPaperIds[key] = crypto.randomUUID(); savePreferences(); } return preferences.askPaperIds[key]; },
-  audioControl: async enabled => {
-    if (!glasses.bridge || enabled && !glasses.ready) { if (!enabled) return true; throw new Error('Open Pageborne in the Even app to use the glasses microphone, or type on the phone.'); }
-    return glasses.lane.run(enabled ? 'microphone-start' : 'microphone-stop', () => glasses.bridge.audioControl(enabled));
+  audioControl: async (enabled, source) => {
+    if (!glasses.bridge || enabled && !glasses.ready) { if (!enabled) return true; throw new Error('Open Pageborne in the Even app to use its microphone, or type on the phone.'); }
+    return glasses.lane.run(enabled ? 'microphone-start' : 'microphone-stop', () => glasses.bridge.audioControl(enabled, source));
   },
   showSettings: () => setSettingsOpen(true),
   goToPosition: (percent, turn) => {
@@ -1055,7 +1055,7 @@ function renderPassage() {
   renderFollow();
 }
 function renderControls() {
-  const micAvailable = !!navigator.mediaDevices?.getUserMedia && !!globalThis.AudioWorkletNode;
+  const micAvailable = askUI.nativePhoneMic || !!navigator.mediaDevices?.getUserMedia && !!globalThis.AudioWorkletNode;
   $('preview-speak').hidden = !micAvailable;
   $('preview-speak').disabled = !libraryReady || (!active && !askUI.session.active) || pdfPreparations.size > 0 || !!askUI.speech.setup.blocked;
   $('preview-speak').textContent = pdfPreparations.size ? 'Document loading' : ['starting', 'listening'].includes(askUI.session.status) ? 'Release to review' : 'Hold to talk';

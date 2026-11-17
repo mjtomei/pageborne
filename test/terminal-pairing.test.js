@@ -32,5 +32,6 @@ test('invalid or ambiguous QR data cannot be imported and errors never repeat cr
 
 test('a host-free build drops a previous network whitelist and preserves QR permissions', () => {
   const manifest = askManifest({ permissions: [{ name: 'network', whitelist: ['https://old-terminal.example'] }, { name: 'camera' }, { name: 'album' }] }, askOrigins(''));
-  assert.deepEqual(manifest.permissions.map(p => p.name), ['camera', 'album', 'g2-microphone']);
+  assert.deepEqual(manifest.permissions.map(p => p.name), ['camera', 'album', 'g2-microphone', 'phone-microphone']);
+  assert.deepEqual(askManifest(manifest, []).permissions, manifest.permissions, 'repacking must not duplicate microphone permissions');
 });

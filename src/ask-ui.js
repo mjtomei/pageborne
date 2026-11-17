@@ -14,6 +14,7 @@ import { renderSpeechConfidence, uncertainWords } from './speech-confidence.js';
 import { SpeechUI } from './speech-ui.js';
 import { formatSpokenFilenames } from '@pageborne/browser-stt';
 import { BrowserMicrophone } from './browser-microphone.js';
+import { AudioInputSource } from '@evenrealities/even_hub_sdk';
 import { AskKeyboard } from './ask-keyboard.js';
 import { AskPhoneReadingView } from './ask-reading-view.js';
 import { ChatScrollbar } from './chat-scrollbar.js';
@@ -52,8 +53,13 @@ export class AskUI {
       }
       try { this.stream.receive(bytes); } catch { void this.release(); }
     };
-    this.mic = new AskMicrophone(audioControl, limit, chunk);
-    this.phoneMic = new BrowserMicrophone(limit, chunk);
+    this.mic = new AskMicrophone(enabled => audioControl(enabled, AudioInputSource.Glasses), limit, chunk);
+    // The Even WebView exposes browser audio APIs but may reject getUserMedia.
+    // Its supported phone capture sends PCM through the same native event path.
+    this.nativePhoneMic = this.options().evenHost;
+    this.phoneMic = this.nativePhoneMic
+      ? new AskMicrophone(enabled => audioControl(enabled, AudioInputSource.Phone), limit, chunk)
+      : new BrowserMicrophone(limit, chunk);
     this.speech = new SpeechUI({ read: readSpeech, save: saveSpeech, readVocabulary, saveVocabulary, readContextVocabulary, saveContextVocabulary, vocabularyContext: () => this.vocabularyContext(), changed: () => this.close(), diagnostics });
     this.speech.observeTranscription = (id, audio, options) => {
       const stream = this.stream.streams?.get(id), window = {};
@@ -141,6 +147,10 @@ export class AskUI {
   }
   get unavailableReason() { return this.pdfProcessing() ? 'Ask is unavailable while the PDF is processing.' : ''; }
   options() { return { evenHost: !!window.flutter_inappwebview?.callHandler, origins, diagnostics: this.diagnostics, onLibraryFile: this.onLibraryFile }; }
+  receiveAudio(bytes, source = AudioInputSource.Glasses) {
+    if (source === AudioInputSource.Phone) { if (this.nativePhoneMic) this.phoneMic.receive(bytes); }
+    else if (source === AudioInputSource.Glasses) this.mic.receive(bytes);
+  }
   cancelPairing(clearInput = true) {
     this.qrJob?.abort(); this.qrJob = null; this.pairingBusy(false);
     if (clearInput) $('ask-pairing-url').value = '';
@@ -394,9 +404,9 @@ export class AskUI {
           this.recordings.hints(this.voiceRecording, this.dictationVocabulary, this.dictationFilenames);
         } catch (error) { this.speech.failure(error); }
       }, 0);
-      // Phone microphone permissions must be requested in the user gesture.
-      // Glasses capture waits only for queued display work, never model loading.
-      if (source !== 'phone') await presented;
+      // Browser permission requests must stay in the user gesture. Native
+      // capture waits only for queued display work, never model loading.
+      if (source !== 'phone' || this.nativePhoneMic) await presented;
       if (this.activeMic.stopping) await this.activeMic.stopping;
       if (generation !== this.generation) return;
       this.captureRequested = true;
@@ -414,8 +424,12 @@ export class AskUI {
       if (this.speech.backend === 'remote') this.recordingTimer = setTimeout(() => this.release(), 60000);
     } catch (error) {
       if (generation !== this.generation) return;
+      this.generation++; this.captureRequested = false;
+      this.diagnostics?.error('microphone-start-error', error, { source, transport: source === 'phone' && !this.nativePhoneMic ? 'browser' : 'native' });
       this.stream.cancel(); const recording = this.voiceRecording;
-      this.activeMic?.stop().catch(() => {}).finally(() => this.recordings.cancel(recording)); this.session.fail(error);
+      this.voiceRecording = null;
+      this.activeMic?.stop().catch(() => {}).finally(() => this.recordings.cancel(recording));
+      this.session.fail(source === 'phone' ? new Error(`Could not start the phone microphone. ${error.message || error}`) : error);
     }
   }
   async release() {
