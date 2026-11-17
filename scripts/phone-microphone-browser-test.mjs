@@ -107,6 +107,11 @@ try {
   await audio('glasses'); assert.equal(await page.evaluate(() => window.__bytes), 6400);
   await page.evaluate(() => window.__askUI.release());
   report.glassesSourcePreserved = true;
+  await back();
+  await page.evaluate(() => { const ask = window.__askUI; ask.open({ showConversation: false }); ask.config.token = ''; });
+  await hold(); await expect.poll(state).toBe('error'); await page.mouse.up();
+  assert.equal(await page.evaluate(() => window.__askUI.session.error), 'Enter the Even Terminal pairing token.', 'connection errors must not become microphone errors');
+  report.connectionErrorPreserved = true;
   assert.equal(await page.evaluate(() => window.__browserMicCalls), 0);
   assert.deepEqual(report.errors, []); report.passed = true;
 } finally {

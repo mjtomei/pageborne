@@ -378,6 +378,7 @@ export class AskUI {
     this.dictationReturn = previous;
     const generation = ++this.generation;
     this.voiceTiming = { generation, started };
+    this.captureRequested = false;
     try {
       checkConnection(this.config, this.options());
       if (this.speech.backend === 'remote') checkTranscription(this.config, this.options());
@@ -386,7 +387,6 @@ export class AskUI {
       this.dictationFilenames = [];
       if (this.speech.backend !== 'remote') this.stream.start(this.dictationVocabulary, { filenames: this.dictationFilenames });
       this.activeMic = source === 'phone' ? this.phoneMic : this.mic;
-      this.captureRequested = false;
       this.session.setStatus('starting');
       // Submit the popup now, ahead of audioControl on the shared native lane.
       // No animation-timer delay, model download, or vocabulary ranking first.
@@ -424,12 +424,13 @@ export class AskUI {
       if (this.speech.backend === 'remote') this.recordingTimer = setTimeout(() => this.release(), 60000);
     } catch (error) {
       if (generation !== this.generation) return;
+      const captureFailed = this.captureRequested;
       this.generation++; this.captureRequested = false;
-      this.diagnostics?.error('microphone-start-error', error, { source, transport: source === 'phone' && !this.nativePhoneMic ? 'browser' : 'native' });
+      if (captureFailed) this.diagnostics?.error('microphone-start-error', error, { source, transport: source === 'phone' && !this.nativePhoneMic ? 'browser' : 'native' });
       this.stream.cancel(); const recording = this.voiceRecording;
       this.voiceRecording = null;
       this.activeMic?.stop().catch(() => {}).finally(() => this.recordings.cancel(recording));
-      this.session.fail(source === 'phone' ? new Error(`Could not start the phone microphone. ${error.message || error}`) : error);
+      this.session.fail(source === 'phone' && captureFailed ? new Error(`Could not start the phone microphone. ${error.message || error}`) : error);
     }
   }
   async release() {
