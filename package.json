@@ -1,6 +1,6 @@
 {
   "name": "even-reader",
-  "version": "0.8.170",
+  "version": "0.8.171",
   "private": true,
   "type": "module",
   "description": "Markdown and PDF reading on Even G2 glasses, phones and tablets",
@@ -87,6 +87,7 @@
     "test:ask-followups": "node scripts/ask-followups-browser-test.mjs",
     "test:speech:verification": "node scripts/speech-verification-browser-test.mjs",
     "test:phone-microphone": "node scripts/phone-microphone-browser-test.mjs",
+    "test:voice-latency": "node scripts/voice-latency-browser-test.mjs",
     "test:web": "node scripts/web-reader-browser-test.mjs",
     "release:audit": "node scripts/release-audit.mjs",
     "release:export": "node scripts/release-export.mjs",
@@ -111,7 +112,7 @@
   "dependencies": {
     "@evenrealities/even_hub_sdk": "0.0.14",
     "@evenrealities/pretext": "0.1.4",
-    "@pageborne/browser-stt": "git+https://github.com/mjtomei/browser-stt.git#31f03332d8740e1c02aac123f8d5408b4dd00a1a",
+    "@pageborne/browser-stt": "git+https://github.com/mjtomei/browser-stt.git#b184c49833a101f539003c55f028828d7a7f08b1",
     "@tesseract.js-data/eng": "1.0.0",
     "express": "5.2.1",
     "jose": "6.2.12",

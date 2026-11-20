@@ -39,6 +39,7 @@ jobs:
           ASK_BROWSER=chromium npm run test:ask-sync
           ASK_BROWSER=chromium npm run test:ask-followups
           npm run test:phone-microphone
+          VOICE_BROWSER=chromium npm run test:voice-latency
           ASK_BROWSER=chromium npm run test:ask-models
           npm run test:terminal-sessions
           LIBRARIAN_BROWSER=chromium npm run test:librarian

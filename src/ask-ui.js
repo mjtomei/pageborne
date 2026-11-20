@@ -27,8 +27,8 @@ import packageInfo from '../package.json' with { type: 'json' };
 
 const $ = id => document.getElementById(id);
 export class AskUI {
-  constructor({ pdfProcessing = () => false, goToPosition = () => {}, snapshot, pause, changed, presentVoiceOverlay = () => {}, returnToLibrary = () => {}, returnToSessions = () => {}, onLibraryFile = () => {}, readConfig, saveConfig, readModels = () => ({}), saveModels = () => {}, readBindings, saveBindings, readChats, saveChats, reveal, paperIdentity, audioControl, showSettings, captureQrImage, automaticConnection = false, readSpeech, saveSpeech, readVocabulary, saveVocabulary, readContextVocabulary, saveContextVocabulary, diagnostics }) {
-    Object.assign(this, { pdfProcessing, goToPosition, snapshot, pause, changed, presentVoiceOverlay, returnToLibrary, returnToSessions, onLibraryFile, readConfig, saveConfig, readModels, saveModels, readBindings, saveBindings, paperIdentity, showSettings, captureQrImage, automaticConnection, diagnostics });
+  constructor({ pdfProcessing = () => false, goToPosition = () => {}, snapshot, pause, changed, presentVoiceOverlay = () => {}, presentTranscription = () => {}, returnToLibrary = () => {}, returnToSessions = () => {}, onLibraryFile = () => {}, readConfig, saveConfig, readModels = () => ({}), saveModels = () => {}, readBindings, saveBindings, readChats, saveChats, reveal, paperIdentity, audioControl, showSettings, captureQrImage, automaticConnection = false, readSpeech, saveSpeech, readVocabulary, saveVocabulary, readContextVocabulary, saveContextVocabulary, diagnostics }) {
+    Object.assign(this, { pdfProcessing, goToPosition, snapshot, pause, changed, presentVoiceOverlay, presentTranscription, returnToLibrary, returnToSessions, onLibraryFile, readConfig, saveConfig, readModels, saveModels, readBindings, saveBindings, paperIdentity, showSettings, captureQrImage, automaticConnection, diagnostics });
     this.glassesVisible = false; this.phoneVisible = false; this.replyUnread = false;
     this.chat = new AskChat(readChats, saveChats); this.reveal = reveal;
     this.deliveries = new Map();
@@ -78,8 +78,10 @@ export class AskUI {
             readyModels: Object.values(this.speech.models.entries).filter(e => e.state === 'ready').length });
         }
         if (this.session.review?.completing) { this.reviewSpeech(text, result, true); return; }
+        const newText = text !== this.session.voiceDraft;
         this.draftConfidence = { text, words: result.words || [] }; $('ask-question').value = text;
         this.session.updateTranscription(text, result.words || []);
+        if (newText) this.presentTranscription();
         if (text.length >= MAX_QUESTION_CHARS - 1000) void this.release();
       }, failure: error => { this.speech.failure(error, 'wasm'); void this.release(); } });
     this.keyboard = new AskKeyboard($('ask-panel'), $('ask-question'), () => this.session.active && this.phoneVisible, () => { this.resizeQuestion(); this.scrollChat(); this.changed(); });
@@ -274,7 +276,9 @@ export class AskUI {
     if (showConversation) { this.glassesVisible = true; this.replyUnread = false; }
     if (this.session.active) {
       if (revealUnread) this.session.syncConversation(this.chat.turns(this.paperKey), 'unread');
-      if (showConversation) { this.pause(); this.acknowledgeReply(); } this.render(); this.changed(); void this.pollFooter(); return true;
+      if (showConversation) { this.pause(); this.acknowledgeReply(); } this.render(); this.changed(); void this.pollFooter();
+      if (!dictation) this.warmSpeech();
+      return true;
     }
     const { layout, y, title, wordFrame, paperId } = this.snapshot();
     const terminalSession = scope === 'terminal-session';
@@ -323,7 +327,19 @@ export class AskUI {
     const view = this.replyViews.get(this.paperKey);
     if (view?.turnId === this.turnId && this.session.status === 'answer' && view.answer === this.session.answer) this.session.restoreView(view);
     if (revealUnread) { this.session.syncConversation(this.chat.turns(this.paperKey), 'unread'); this.changed(); }
-    $('ask-question').value = this.modelDrafts.get(this.paperKey) || ''; this.resizeQuestion(); void this.pollFooter(); return true;
+    $('ask-question').value = this.modelDrafts.get(this.paperKey) || ''; this.resizeQuestion(); void this.pollFooter();
+    if (!dictation) this.warmSpeech();
+    return true;
+  }
+  warmSpeech() {
+    clearTimeout(this.warmSpeechTimer);
+    // Start loading while the user reads Ask, before holding to speak. Yield
+    // to the pane first; PDF preparation retains its memory priority.
+    this.warmSpeechTimer = setTimeout(() => {
+      this.warmSpeechTimer = null;
+      if (!this.session.active || !this.phoneVisible && !this.glassesVisible || this.pdfProcessing()) return;
+      try { this.speech.open(); } catch (error) { this.speech.failure(error); }
+    }, 0);
   }
   readingContext() {
     const binding = this.binding();
@@ -485,9 +501,11 @@ export class AskUI {
     this.resizeQuestion(); this.render(); this.changed();
   }
   reviewSpeech(text, result, completing = false) {
+    const newText = text !== this.session.review?.text;
     this.draftConfidence = { text, words: result?.words || [] };
     $('ask-question').value = text; this.session.reviewQuestion(text, result?.words || []);
     this.session.review.completing = completing; this.render(); this.changed();
+    if (newText) this.presentTranscription();
   }
   cancelSpeechCompletion() { this.generation++; this.transcription?.abort(); this.stream.cancel(); }
   cancelReview() { this.recordings.cancel(this.voiceRecording); this.voiceRecording = null; this.draftConfidence = null; this.cancelSpeechCompletion(); $('ask-question').value = ''; this.session.cancelReview(); this.resizeQuestion(); }
@@ -874,6 +892,7 @@ export class AskUI {
     this.session.restoreResponse();
   }
   close() {
+    clearTimeout(this.warmSpeechTimer); this.warmSpeechTimer = null;
     const recording = this.voiceRecording; this.voiceRecording = null;
     this.glassesVisible = this.phoneVisible = false;
     this.dictationReturn = null;

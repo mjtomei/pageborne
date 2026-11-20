@@ -193,6 +193,9 @@ askUI = new AskUI({
   returnToSessions: session => { void openTerminalSessions(sessionIdentity(session)); },
   returnToLibrary: () => { picker = openDocumentPicker(libraryDocuments(), active?.id, LIBRARIAN_ID); setLibraryOpen(true, false); dirty = true; renderControls(); },
   presentVoiceOverlay: () => { dirty = true; animate(performance.now(), true); if (!WEB) return glasses.queue?.whenIdle(); },
+  // Recognized words should not wait for the 100 ms reading tick and 120 ms
+  // frame gate. The native queue still coalesces updates and serializes BLE.
+  presentTranscription: () => { dirty = true; animate(performance.now(), true); },
   automaticConnection: !!automaticTerminal || WEB,
   readConfig: readerConnection,
   saveConfig: config => { preferences.ask = config; savePreferences(); },

@@ -1,3 +1,11 @@
+## Voice latency — 2026-11-20
+
+Version 0.8.171 starts loading Mini on opening Ask and submits changed live/final transcription text immediately. Existing serialized native calls and latest-frame coalescing remain in use. Preloading yields to the pane, is cancelled by closing it, skips hidden panes and PDF preparation, and respects remote voice/continue-without-voice settings. Model weights, memory settings and saved verification remain unchanged.
+
+725 unit tests pass with one existing skip. The new Chromium/WebKit regression uses the real AskUI, native SDK and frame queue with recognizer/host fixtures. New words enter the queue synchronously (1–5 ms in the fixture), including while an 80 ms display call is outstanding; calls never overlap, and the latest and final reviewed words arrive. It also checks preload cancellation, PDF priority and voice settings. Phone hold/release/cancel/retry and glasses source-routing regression passes. These are browser integration checks, not physical-phone or BLE measurements. Actual Mini inference/streaming checks are recorded separately in Browser STT's VALIDATION.md.
+
+Final pinned Browser STT 0.1.21 revision `b184c49833a101f539003c55f028828d7a7f08b1` matches installed source/model manifests. Debug/release packages, web build, source/built audit and public/private profile isolation pass. Ask followups, voice during a reply, recording collection, reconnection and no-automatic-resend regression passes. The new latency regression is included in CI.
+
 # Publication checks — 2026-10-24
 
 The shared source supports release glasses builds, explicitly configured debug
