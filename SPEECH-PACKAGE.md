@@ -20,6 +20,8 @@ npm run test:build-profiles
 
 Commit both package files. A fixed revision makes builds repeatable; normal installs do not follow a moving branch. To develop locally, clone Browser STT alongside this project, run `npm ci` there, then temporarily use `npm install --no-save --package-lock=false ../browser-stt`. Rebuild the engine after source edits. Do not commit that local override.
 
+Pageborne selects `modelIds: ['fluid-mini']` and retires only the superseded three speech models and their setup receipts. Mini uses the pinned ONNX/WASM implementation; its upstream attribution is in README.md and LICENSING.md. Original documents, reading history and chats are untouched.
+
 Pageborne owns the microphone/display integration, context vocabulary ranking and review/send UI. It imports the engine through its public package API. Native storage adapters remain in Pageborne; the engine also supports ordinary browser storage.
 
 ## Consumer checks
@@ -29,4 +31,4 @@ PAGEBORNE_TEST_MODEL_DIR=/absolute/path/to/models npm run test:speech:verificati
 PAGEBORNE_TEST_MODEL_DIR=/absolute/path/to/models npm run test:speech
 ```
 
-Keep model directories and filenames from the installed package's `ensemble-models.json`. The full speech suite also uses audio from `BROWSER_STT_RESEARCH=/absolute/path/to/browser-stt`. Browser fixtures and reports are distinct from physical-phone measurements. Third-party notices remain in the installed dependency and built app assets; see [notices](LICENSING.md).
+The production verification check uses `fluid-mini.json`; the older ensemble benchmark uses `ensemble-models.json`. Keep their model directories and filenames intact. The full speech suite also uses audio from `BROWSER_STT_RESEARCH=/absolute/path/to/browser-stt`. Browser fixtures and reports are distinct from physical-phone measurements. Third-party notices remain in the installed dependency and built app assets; see [notices](LICENSING.md).

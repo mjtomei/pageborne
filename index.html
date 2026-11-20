@@ -138,7 +138,7 @@
             <label class="setting-row switch-row"><span>Use words from this paper and chat</span><input id="speech-context-vocabulary" type="checkbox" role="switch" checked></label>
             <button id="speech-vocabulary-show" type="button" class="secondary">View vocabulary hints</button>
             <div id="speech-vocabulary-details">
-              <p class="muted">Custom terms come first, followed by words from your reading position and recent conversation. Hints encourage a spelling; they do not force it.</p>
+              <p class="muted">Custom terms come first, followed by words from your reading position and recent conversation. Filename context helps format spoken filenames. Fluid Speech Mini does not use these terms to bias recognition; they are saved with recordings for evaluation when collection is enabled.</p>
               <p id="speech-vocabulary-source" class="muted"></p>
               <label class="ask-field"><span id="speech-vocabulary-count">Next recording</span><textarea id="speech-vocabulary-preview" rows="8" readonly spellcheck="false" aria-label="Vocabulary hints for next recording"></textarea></label>
               <button id="speech-vocabulary-refresh" type="button" class="secondary">Refresh for current position</button>
@@ -149,7 +149,7 @@
               </details>
             </div>
             <p class="muted">Local dictation shows provisional words while you speak. Stop speaking to edit the final draft or send it.</p>
-            <p class="muted">Conformer Small, Zipformer 20M and Moonshine Base run together on the CPU. First-open setup downloads about 249 MB once, then checks and keeps the models ready until exit. Verified downloads are reused across app updates while saved app data is retained. Audio stays on this device; the recognized question goes to your agent. Gray words have combined confidence below 0.70; they may still be correct. The glasses dim the newest uncertain words that fit; the phone marks all of them.</p>
+            <p class="muted">Fluid Speech Mini by FluidVoice recognizes speech on this device. First setup downloads about 300 MB; saved files are reused across app updates. The recognized question goes to your agent. Gray words have confidence below 0.70; they may still be correct. The glasses dim the newest uncertain words that fit; the phone marks all of them. Enabled recording collection also saves audio to your desktop for speech evaluation.</p>
             <p id="speech-status" class="muted" role="status"></p>
             <button id="speech-retry" type="button" class="secondary" hidden>Retry voice</button>
             </details>

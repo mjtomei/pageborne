@@ -15,7 +15,7 @@ import { showLibrary, showSettings } from './ui-helpers.mjs';
 
 process.env.PAGEBORNE_AUTOMATIC_TERMINAL = 'false';
 const out = 'test-results/speech-storage'; await mkdir(out, { recursive: true });
-const fixtures = ['conformer', 'zipformer', 'moonshine'].map((id, i) => {
+const fixtures = ['fluid-mini'].map((id, i) => {
   const bytes = Buffer.alloc(48001 + i, i + 1);
   return { bytes, model: { id, name: id, files: [{ file: 'model.onnx', bytes: bytes.length,
     sha256: createHash('sha256').update(bytes).digest('hex'), url: `https://models.invalid/${id}.onnx` }] } };
@@ -23,7 +23,7 @@ const fixtures = ['conformer', 'zipformer', 'moonshine'].map((id, i) => {
 const vite = await createServer({ mode: 'debug', cacheDir: '.state/vite-storage-recovery', clearScreen: false,
   optimizeDeps: { entries: ['index.html'], exclude: ['@pageborne/browser-stt'] },
   plugins: [displayProbe(), { name: 'quota-fixtures', enforce: 'pre', transform(code, id) {
-    if (id.split('?')[0].endsWith('/ensemble-speech.js')) return code.replace(/import manifests from [^;]+;/, `const manifests = ${JSON.stringify(fixtures.map(f => f.model))};`);
+    if (id.split('?')[0].endsWith('/ensemble-speech.js')) return code.replace(/import miniManifest from [^;]+;/, `const miniManifest = ${JSON.stringify(fixtures[0].model)};`);
   } }], server: { host: '127.0.0.1', port: 0, hmr: false, watch: null } });
 await vite.listen();
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || '/usr/bin/google-chrome', headless: true, args: ['--disable-gpu'] });
@@ -107,7 +107,7 @@ try {
   // Reclaim only disposable data and finish without requiring a recovery click.
   await open();
   await expect(page.locator('#import')).toBeEnabled({ timeout: 15000 });
-  assert(rejectedModelWrites > 0); assert.equal(await page.evaluate(() => __prepared.length), 3);
+  assert(rejectedModelWrites > 0); assert.equal(await page.evaluate(() => __prepared.length), 1);
   assert.equal(values.get(prefix + 'orphan:0'), ''); assert.equal(values.get(prefix + 'orphan:1'), '');
   assert.equal([...values].filter(([key, value]) => key.includes(':pdf-cache:body:') && value).length, 0);
   assert.equal(report.networkModelRequests, 0, 'complete models survive automatic cleanup without redownload');
@@ -118,14 +118,14 @@ try {
   assert.equal(await page.evaluate(() => __prepared.length), 0, 'saved checks survive a fresh browser context');
   await context.close();
 
-  // Match the 0-byte symptom: a missing first Moonshine file, rejected before
+  // Match the 0-byte symptom: a missing first Mini file, rejected before
   // streaming its bytes. Recovery retries just that download, not saved weights.
   reset('quota');
-  await (await modelStore.cache()).delete(fixtures[2].model.files[0].sha256); quota = usage();
+  await (await modelStore.cache()).delete(fixtures[0].model.files[0].sha256); quota = usage();
   await open();
   await expect(page.locator('#import')).toBeEnabled({ timeout: 15000 });
   assert.equal(report.networkModelRequests, 2, 'one rejected download and one recovered download');
-  assert.equal(await page.evaluate(() => __prepared.length), 3); await assertPreserved();
+  assert.equal(await page.evaluate(() => __prepared.length), 1); await assertPreserved();
   await context.close();
 
   // Native storage can remain unavailable after cleanup. Stop after one retry,
@@ -155,7 +155,7 @@ try {
   await expect.poll(() => page.evaluate(() => __askUI.speech.setup.suspended)).toBe(false);
   await expect(page.locator('#speech-setup')).not.toBeVisible({ timeout: 15000 });
   assert.equal(await page.evaluate(() => __askUI.speech.setup.suspended), false);
-  assert.equal(await page.evaluate(() => __prepared.length), 3);
+  assert.equal(await page.evaluate(() => __prepared.length), 1);
   await assertPreserved(); await context.close();
 
   // Worker/inference failures must not trigger cleanup or automatic retries.

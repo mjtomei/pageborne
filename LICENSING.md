@@ -1,6 +1,10 @@
 # Third-party notices
 
-Pageborne downloads its speech models at first voice setup; no model weights are included in this repository or its source export. Browser STT's `ensemble-models.json` pins each download by immutable revision, byte length and SHA-256, and the app verifies those hashes before use. The Conformer CTC Small and Zipformer 20M distributions are Apache-2.0; Moonshine Base is MIT, with its license text in the installed Browser STT dependency under `vendor/stt`.
+Pageborne downloads Fluid Speech Mini at first voice setup; no model weights are included in this repository or its source export. Browser STT's `fluid-mini.json` pins each download by immutable revision, byte length and SHA-256, and the app verifies those hashes before use.
+
+**Fluid Speech Mini by FluidVoice. Built on NVIDIA Parakeet TDT 0.6B v3 and Moondream Parakeet Ultra.** All three models use [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). [Upstream model and attribution](https://huggingface.co/FluidVoice-Labs/fluid-speech-mini-onnx). Model weights are unmodified; Browser STT adapts preprocessing and greedy decoding for browser workers and adds streaming integration. Original license and notice are in `vendor/stt/fluid-mini-LICENSE` and `fluid-mini-NOTICE` in the dependency and copied into built application assets.
+
+The standalone Browser STT dependency retains its optional Conformer CTC Small and Zipformer 20M (Apache-2.0) and Moonshine Base (MIT) APIs and notices. Pageborne no longer downloads or runs those models.
 
 Bundled runtimes and libraries keep their own licenses, and their notices are copied into built assets:
 

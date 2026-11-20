@@ -12,7 +12,7 @@ export class SpeechUI {
   constructor({ read, save, changed, diagnostics, readVocabulary = () => '', saveVocabulary = () => {}, readContextVocabulary = () => true, saveContextVocabulary = () => {}, vocabularyContext = () => ({}) }) {
     Object.assign(this, { read, save, changed, diagnostics, readVocabulary, readContextVocabulary, vocabularyContext });
     this.storage = deferredSpeechStore();
-    this.models = new EnsembleSpeech({ store: this.storage.store, verificationDevice: speechDeviceIdentity(),
+    this.models = new EnsembleSpeech({ modelIds: ['fluid-mini'], store: this.storage.store, verificationDevice: speechDeviceIdentity(),
       checkpoint: () => this.diagnostics?.flushCheckpoint?.(),
       changed: () => this.renderModels(), failure: (error, backend, model) => this.failure(error, backend, model) });
     this.setup = new SpeechSetup(this.models);
@@ -96,7 +96,7 @@ export class SpeechUI {
     this.setup?.render();
     const entries = Object.values(this.models.entries);
     if (this.diagnostics?.enabled) {
-      const snapshot = { backend: this.backend, ensemble: true,
+      const snapshot = { backend: this.backend, ensemble: entries.length > 1,
         storage: { kind: this.models.store.storageKind, ...this.models.store.stats,
           files: [...this.models.store.files.values()].map(({ url, ...file }) => ({ ...file })) },
         models: Object.fromEntries(entries.map(e => [e.model.id, { state: e.state, progress: e.progress.slice(0, 200), downloadBytes: e.downloadBytes, totalBytes: e.totalBytes, setup: { ...e.setup }, verified: e.verified, verification: e.ready?.verification, wasmBytes: e.ready?.wasmBytes }])) };
@@ -125,7 +125,8 @@ export class SpeechUI {
     this.diagnostics?.log('local-speech', metrics);
     const timing = result.transcribeMs == null ? `loaded in ${(result.loadMs / 1000).toFixed(2)}s`
       : `${result.seconds.toFixed(1)}s audio → ${(result.transcribeMs / 1000).toFixed(2)}s transcription`;
-    const label = `${result.unavailableModels?.length ? `${3 - result.unavailableModels.length}/3 recognizers · ` : ''}${speechLabel(result.backend)} · ${timing} · ${result.model || 'Speech ensemble'}${result.adapter?.fallback ? ' · software GPU' : ''}`;
+    const count = Object.keys(this.models.entries).length;
+    const label = `${result.unavailableModels?.length ? `${count - result.unavailableModels.length}/${count} recognizers · ` : ''}${speechLabel(result.backend)} · ${timing} · ${result.model || 'Fluid Speech Mini'}${result.adapter?.fallback ? ' · software GPU' : ''}`;
     $('ask-voice-metrics').textContent = label;
     return label;
   }

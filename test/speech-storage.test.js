@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { deferredSpeechStore, waitForSpeechHost } from '../src/speech-storage.js';
+import { deferredSpeechStore, waitForSpeechHost, retirePreviousVoiceModels } from '../src/speech-storage.js';
 import { speechSetupFrame, modelFileStatus, modelDownloadSummary } from '../src/speech-setup.js';
 import { getTextWidth } from '@evenrealities/pretext';
 
@@ -121,4 +121,35 @@ test('verification device identity survives rotation but changes with hardware/r
   assert.equal(identity, speechDeviceIdentity({ ...device, screen: { width: 852, height: 393 } }));
   assert.notEqual(identity, speechDeviceIdentity({ ...device, navigator: { ...device.navigator, userAgent: 'iOS 19' } }));
   assert.notEqual(identity, speechDeviceIdentity({ ...device, screen: { width: 440, height: 956 } }));
+});
+
+
+test('Mini migration reclaims only retired speech weights and resumes interrupted cleanup', async () => {
+  const { ensembleModels, fluidSpeechMini } = await import('@pageborne/browser-stt');
+  const { nativeModelCache } = await import('@pageborne/browser-stt/ensemble-cache');
+  const values = new Map([['library', 'original'], ['reading-history', 'keep']]);
+  const kv = { get: async key => values.get(key), set: async (key, value) => values.set(key, value) };
+  const cache = nativeModelCache(kv);
+  const old = ensembleModels[0].files.find(f => f.text === undefined).sha256;
+  const current = fluidSpeechMini.files[0].sha256;
+  await cache.put(old, new Response(new Uint8Array(75000).fill(7)));
+  await cache.put(current, new Response('current model'));
+  await cache.put('verification:fluid-mini', new Response('current check'));
+  await cache.put('verification:conformer', new Response('old check'));
+  const prefix = 'pageborne:models:v1:';
+  values.set(prefix + 'pending:' + old, JSON.stringify({ id: 'abandoned', chunks: 1 }));
+  values.set(prefix + 'abandoned:0', 'partial');
+  const set = kv.set; let cleared = 0;
+  kv.set = async (key, value) => { if (!value && ++cleared === 5) throw Error('Interrupted'); return set(key, value); };
+  await assert.rejects(retirePreviousVoiceModels(cache), /Interrupted/);
+  kv.set = set;
+  await retirePreviousVoiceModels(nativeModelCache(kv));
+  await retirePreviousVoiceModels(nativeModelCache(kv));
+  assert.equal(await cache.match(old), undefined);
+  assert.equal(await cache.match('verification:conformer'), undefined);
+  assert.equal(values.get(prefix + 'abandoned:0'), '');
+  assert.equal(await (await cache.match(current)).text(), 'current model');
+  assert.equal(await (await cache.match('verification:fluid-mini')).text(), 'current check');
+  assert.equal(values.get('library'), 'original'); assert.equal(values.get('reading-history'), 'keep');
+  assert.equal([...values.values()].filter(Boolean).length, 6, 'only two current cache entries and unrelated data remain');
 });

@@ -8,9 +8,9 @@ import assert from 'node:assert/strict';
 import { displayProbe } from './display-probe.mjs';
 import { AtomicPhoneValue } from '../src/phone-storage.js';
 const out = 'test-results/speech-startup'; await mkdir(out, { recursive: true });
-const fixtures = ['conformer', 'zipformer', 'moonshine'].map((id, i) => {
+const fixtures = ['fluid-mini'].map((id, i) => {
   const bytes = Buffer.alloc(96001 + i, 73 + i);
-  return { bytes, model: { id, name: ['Conformer CTC Small', 'Zipformer 20M', 'Moonshine Base'][i], files: [{ file: 'model.onnx', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), url: `https://models.example/${id}.onnx` }] } };
+  return { bytes, model: { id, name: ['Fluid Speech Mini'][i], files: [{ file: 'model.onnx', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), url: `https://models.example/${id}.onnx` }] } };
 });
 const servers = [], reports = [];
 async function server() {
@@ -19,7 +19,7 @@ async function server() {
     server: { host: '127.0.0.1', port: 0, watch: null, hmr: false },
     plugins: [displayProbe(), { name: 'small-setup-fixture', enforce: 'pre',
       transformIndexHtml: html => html.replace('<head>', '<head><meta name="pageborne-host" content="even">'),
-      transform(code, id) { if (id.split('?')[0].endsWith('/ensemble-speech.js')) return code.replace(/import manifests from [^;]+;/, `const manifests = ${JSON.stringify(fixtures.map(f => f.model))};`); },
+      transform(code, id) { if (id.split('?')[0].endsWith('/ensemble-speech.js')) return code.replace(/import miniManifest from [^;]+;/, `const miniManifest = ${JSON.stringify(fixtures[0].model)};`); },
     }] });
   await vite.listen(); servers.push(vite); return vite.resolvedUrls.local[0];
 }
@@ -73,8 +73,8 @@ try {
               if (data.cacheReply) { const job = this.pending.get(data.request); this.pending.delete(data.request); if (data.error) job.reject(Error(data.error)); else job.resolve(data.value); return; }
               if (data.operation === 'transcribe') {
                 window.__transcribed.push({ model: this.model, audioMs: (data.audio.byteLength - 44) / 32, vocabulary: data.vocabulary });
-                const text = this.model === 'conformer' ? 'ask Fafnir now' : 'Ask fafner now.';
-                const confidence = this.model === 'conformer' ? .8 : this.model === 'zipformer' ? .45 : .5;
+                const text = 'Ask Fafnir now.';
+                const confidence = .8;
                 this.emit({ id: data.id, result: { text, words: [...text.matchAll(/\w+/g)].map(m => ({ text: m[0], start: m.index, end: m.index + m[0].length, confidence })), seconds: (data.audio.byteLength - 44) / 32000, transcribeMs: 1 } }); return;
               }
               if (data.operation !== 'prepare') return;
@@ -88,7 +88,7 @@ try {
                 if (!data.reuseVerification) { window.__checked.push(data.model.id); this.emit({ id: data.id, progress: { stage: 'checking', loadedBytes: loaded } }); }
                 window.__prepared.push(data.model.id);
                 if (data.reuseVerification && window.__delayPreparation) await new Promise(resolve => setTimeout(resolve, window.__delayPreparation));
-                if (data.model.id === 'moonshine' && !data.reuseVerification) await new Promise((resolve, reject) => { window.__finishModel = fail => { window.__finishModel = null; fail ? reject(Error('Injected setup failure')) : resolve(); }; });
+                if (data.model.id === 'fluid-mini' && !data.reuseVerification) await new Promise((resolve, reject) => { window.__finishModel = fail => { window.__finishModel = null; fail ? reject(Error('Injected setup failure')) : resolve(); }; });
                 this.emit({ id: data.id, result: { backend: 'wasm', verified: true } });
               } catch (error) { this.emit({ id: data.id, error: error.message }); }
             }
@@ -99,7 +99,7 @@ try {
         await page.goto(origins[Math.min(run, 1)]); await expect(page.locator('#speech-setup')).not.toBeVisible();
         // No host at script evaluation or for the first second of initialization.
         await page.waitForTimeout(1100);
-        assert.equal(report.downloads, run ? 3 : 0); assert.equal(await page.evaluate(() => __prepared.length), 0);
+        assert.equal(report.downloads, run ? 1 : 0); assert.equal(await page.evaluate(() => __prepared.length), 0);
         await page.evaluate(() => __installBridge());
         if (run === 0 || run === 3) {
         await expect.poll(() => page.evaluate(() => __boxes.body?.content)).toContain('Preparing voice models');
@@ -107,7 +107,7 @@ try {
         await expect.poll(() => page.evaluate(() => __boxes.body?.content)).toContain('Checking transcription');
         if (run === 3) {
           await expect(page.locator('#speech-setup-help')).toContainText('Using saved files. Downloaded this run: 0 MB.');
-          await expect(page.locator('[data-model=moonshine] [data-stage=download]')).toHaveText('Saved on phone');
+          await expect(page.locator('[data-model=fluid-mini] [data-stage=download]')).toHaveText('Saved on phone');
           await expect(page.locator('#speech-setup')).not.toContainText('Downloading');
         } else {
           await expect(page.locator('#speech-setup-help')).toContainText('Downloaded this run: 0.1 MB.');
@@ -133,13 +133,13 @@ try {
         for (const key of ['positions', 'bookmarks', 'askSessions', 'askChats']) assert.deepEqual(restored[key], savedReading[key], `${key} survived backgrounding during setup`);
         await expect.poll(async () => (await new AtomicPhoneValue(kv, 'preferences').read()).positions).toEqual(savedReading.positions);
         await expect.poll(() => page.evaluate(() => __boxes.body?.content)).toContain('Librarian');
-        assert.equal(report.downloads, 3);
+        assert.equal(report.downloads, 1);
         const info = await page.evaluate(() => ({ kind: __askUI.speech.models.store.storageKind, ...__askUI.speech.models.store.stats }));
         assert.equal(info.kind, 'phone'); if (run) { assert.equal(info.networkRequests, 0); assert.equal(info.downloadedBytes, 0); assert.equal(info.receivedBytes, 0); }
         if (run === 1 || run === 2) {
           assert.equal(await page.evaluate(() => __prepared.length), 0, 'Restart/update creates no speech workers');
           await page.evaluate(() => __askUI.speech.open());
-          await expect.poll(() => page.evaluate(() => __prepared.length)).toBe(3);
+          await expect.poll(() => page.evaluate(() => __prepared.length)).toBe(1);
           assert.equal(await page.evaluate(() => __checked.length), 0, 'First voice loads without retesting');
           if (run === 2) {
             await page.locator('#library-librarian').click();
@@ -158,7 +158,7 @@ try {
             await expect(page.locator('#ask-question')).toHaveValue('Ask Fafnir now.');
             await expect.poll(() => page.evaluate(() => __reviewText)).toBe('Ask Fafnir now.');
             const transcribed = await page.evaluate(() => __transcribed);
-            assert.equal(transcribed.length, 3);
+            assert.equal(transcribed.length, 1);
             assert(transcribed.every(call => call.audioMs === 750 && call.vocabulary.includes('Fafnir')));
             await page.evaluate(() => __askUI.release());
             await expect(page.locator('#ask-review-cancel')).toBeVisible();
@@ -166,9 +166,9 @@ try {
             const timings = await page.evaluate(() => __askUI.diagnostics.events.filter(e => e.type === 'voice-startup'));
             assert(timings.some(e => e.stage === 'first-audio') && timings.some(e => e.stage === 'first-word'), JSON.stringify(timings));
             await page.locator('#ask-review-cancel').click();
-            report.dictation = { coldAudioMs: 750, dictionaryVoteReachesPhoneAndGlasses: true, reviewAndCancel: true, timings };
+            report.dictation = { coldAudioMs: 750, miniResultReachesPhoneAndGlasses: true, reviewAndCancel: true, timings };
           }
-        } else assert.equal((await page.evaluate(() => [...new Set(__checked)])).length, 3);
+        } else assert.equal((await page.evaluate(() => [...new Set(__checked)])).length, 1);
         info.verificationReused = run === 1 || run === 2;
         assert(!(await page.evaluate(() => __allFrames)).some(frame => frame.blocked && frame.body === 'Opening your saved library…'), 'native startup identifies the voice gate while it blocks the library');
         report[['first', 'updated', 'reopened', 'changedDevice'][run]] = info;

@@ -106,7 +106,7 @@ export class SpeechSetup {
           this.recoveryStatus = '';
         }
       }
-      if (!Object.values(this.models.entries).every(entry => entry.verified)) throw Error('All three voice checks must pass before continuing.');
+      if (!Object.values(this.models.entries).every(entry => entry.verified)) throw Error('The voice check must pass before continuing.');
       this.render();
       if (this.dialog.open) await new Promise(resolve => setTimeout(resolve, 350));
       // Reading does not need resident speech heaps. Load them on speaking;
@@ -168,7 +168,7 @@ export class SpeechSetup {
     const status = this.dialog.querySelector('[role=status]');
     const text = this.recoveryStatus || (this.storageUnavailable ? this.error + ' You can continue reading from your desktop without voice.' : '') || (this.storageFailure && this.error
       ? 'Even could not save voice setup data. This does not mean your phone is full. You can continue reading without voice, or retry setup.'
-      : this.error) || (ready ? 'All three models passed. Opening Pageborne…' : 'Keep Pageborne open while voice is prepared.');
+      : this.error) || (ready ? 'Voice check passed. Opening Pageborne…' : 'Keep Pageborne open while voice is prepared.');
     if (status.textContent !== text) status.textContent = text;
     const retry = this.dialog.querySelector('#speech-setup-retry'); retry.hidden = !this.error; retry.disabled = this.busy;
     const free = this.dialog.querySelector('#speech-setup-free-space');

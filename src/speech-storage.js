@@ -1,4 +1,4 @@
-import { EnsembleModelStore } from '@pageborne/browser-stt';
+import { EnsembleModelStore, ensembleModels, fluidSpeechMini } from '@pageborne/browser-stt';
 import { nativeModelCache } from '@pageborne/browser-stt/ensemble-cache';
 import { speechModelStorage } from './speech-model-cache.js';
 import { safeTimeout, cancelTimeout } from './timers.js';
@@ -23,13 +23,29 @@ export async function waitForSpeechHost({ host = window, document = globalThis.d
   });
 }
 
+// Retire only the superseded recognizers. Keep the current model and every
+// unrelated cache entry. Repeated launches resume cleanup after interruption.
+export async function retirePreviousVoiceModels(cache) {
+  const keep = new Set(fluidSpeechMini.files.map(file => file.sha256));
+  for (const model of ensembleModels) {
+    for (const key of [`preparation:${model.id}`, `verification:${model.id}`,
+      ...model.files.filter(file => file.text === undefined && !keep.has(file.sha256)).map(file => file.sha256)]) {
+      await cache.recover?.(key);
+      const saved = await cache.match(key);
+      if (saved) { await saved.body?.cancel(); await cache.delete(key); }
+    }
+  }
+}
+
 export function deferredSpeechStore() {
   let choose;
   const storage = new Promise(resolve => { choose = resolve; });
   const store = new EnsembleModelStore({ open: async () => {
     const kv = await storage;
     store.storageKind = kv ? 'phone' : 'browser';
-    return kv ? nativeModelCache(kv) : speechModelStorage.open('pageborne-ensemble-weights-v1');
+    const cache = kv ? nativeModelCache(kv) : await speechModelStorage.open('pageborne-ensemble-weights-v1');
+    await retirePreviousVoiceModels(cache);
+    return cache;
   } });
   store.storageKind = 'waiting';
   const fetch = store.fetch;
