@@ -73,6 +73,15 @@ try {
         return window.__warmCalls === start;
       });
       assert(report.remoteAndSuspended);
+      report.readingCancelsDownload = await page.evaluate(async () => {
+        const speech = window.__askUI.speech, models = speech.models;
+        let closed = false;
+        speech.models = { entries: { 'fluid-mini': { state: 'downloading' } }, loading: new Promise(() => {}), close() { closed = true; } };
+        try {
+          return await Promise.race([speech.releaseForReading().then(() => closed), new Promise(resolve => setTimeout(() => resolve(false), 1000))]);
+        } finally { speech.models = models; }
+      });
+      assert(report.readingCancelsDownload, 'opening a document must not wait for an unfinished model download');
       report.immediateQueue = await page.evaluate(async () => {
         const ask = window.__askUI; ask.open(); ask.session.setStatus('listening');
         window.__displayDelay = 80;

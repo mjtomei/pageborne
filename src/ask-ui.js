@@ -430,7 +430,8 @@ export class AskUI {
       this.voiceRecording = this.recordings.start({ source, backend: this.speech.backend, document: this.session.context?.title, reproduction: {
         models: Object.values(this.speech.models.entries).map(e => e.model), streamOptions: this.stream.streamOptions,
         confidence: this.stream.confidence, device: { userAgent: navigator.userAgent, platform: navigator.platform,
-          language: navigator.language, hardwareConcurrency: navigator.hardwareConcurrency, deviceMemory: navigator.deviceMemory },
+          language: navigator.language, hardwareConcurrency: navigator.hardwareConcurrency, deviceMemory: navigator.deviceMemory,
+          crossOriginIsolated: !!globalThis.crossOriginIsolated, sharedArrayBuffer: typeof SharedArrayBuffer },
       } });
       this.recordings.hints(this.voiceRecording, this.dictationVocabulary, this.dictationFilenames);
       await this.activeMic.start({ retainAudio: this.speech.backend === 'remote' });

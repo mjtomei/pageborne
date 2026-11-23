@@ -55,7 +55,12 @@ test('hashed web assets use compressed private caching without caching credentia
   const plain = await fetch(url + '/assets/main-test123.js', { headers: { ...headers, 'Accept-Encoding': 'gzip;q=0, identity' } });
   assert.equal(plain.headers['content-encoding'], undefined);
   assert.equal(plain.body.toString(), source);
-  for (const route of ['/', '/web/config']) assert.equal((await fetch(url + route, { headers })).headers['cache-control'], 'no-store');
+  for (const route of ['/', '/web/config']) {
+    const response = await fetch(url + route, { headers });
+    assert.equal(response.headers['cache-control'], 'no-store');
+    assert.equal(response.headers['cross-origin-opener-policy'], 'same-origin');
+    assert.equal(response.headers['cross-origin-embedder-policy'], 'require-corp');
+  }
   assert.equal((await fetch(url + '/assets/main-test123.js', { headers: { ...headers, 'Tailscale-User-Login': 'other' } })).status, 403);
   assert.equal((await fetch(url + '/assets/missing.js', { headers })).status, 404);
 });

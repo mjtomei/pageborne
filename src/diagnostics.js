@@ -20,6 +20,8 @@ function environment() {
     viewport: { width: globalThis.innerWidth, height: globalThis.innerHeight, pixelRatio: globalThis.devicePixelRatio },
     evenHost: !!globalThis.flutter_inappwebview?.callHandler,
     capabilities: {
+      crossOriginIsolated: !!globalThis.crossOriginIsolated, sharedArrayBuffer: typeof SharedArrayBuffer,
+      hardwareConcurrency: globalThis.navigator?.hardwareConcurrency, webgpu: typeof globalThis.navigator?.gpu,
       worker: typeof Worker, wasm: typeof WebAssembly, offscreenCanvas: typeof OffscreenCanvas,
       imageDecoder: typeof ImageDecoder, imageBitmap: typeof createImageBitmap, domMatrix: typeof DOMMatrix,
       promiseWithResolvers: typeof Promise.withResolvers, arrayToSorted: typeof Array.prototype.toSorted,

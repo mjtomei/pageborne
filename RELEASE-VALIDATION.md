@@ -1,3 +1,15 @@
+## Mini CPU threading — 2026-11-23
+
+Version 0.8.172 pins Browser STT 0.1.22 at `ec131dc6e515b51e3f4cdb78b8a7e4ccde2de865`. Mini retains SIMD and uses up to four CPU threads in isolated/shared-memory hosts, with a one-thread fallback. The private web server supplies isolation headers; the embedded Even host controls its own headers. Debug logs and enabled recording metadata include actual worker thread counts. GPU execution is not enabled, model weights are unchanged, and the existing Ask preload remains in use. The engine rechecks Mini for the changed inference configuration without redownloading intact weights.
+
+725 unit tests pass with one existing skip. Debug/release packages, the web build, public/private profile checks, and source/built audits pass. Installed engine source and the Mini manifest match the pinned revision.
+
+The real AskUI/display-queue regression passes in Chromium and WebKit, including prewarming, cancellation, PDF priority, remote/paused voice settings and immediate latest/final text delivery. Six built-web cases (both browsers at phone, tablet and desktop sizes) pass with isolation enabled, covering Markdown/PDF reading, full screen, synchronized Ask and recoverable startup requests. Public and private build settings remain separate.
+
+The web check uncovered a preload problem: PDF opening waited for a missing voice-model download. Reading now cancels preparation still in the download stage; initialization already using memory retains its existing completion/unload guard. The regression deliberately stalls model downloads and requires the PDF to open. Polling assertions allow multiple four-second polling intervals rather than racing a five-second test deadline.
+
+Actual four-thread Chromium/WebKit inference, native-transcript comparisons, long-stream handling, cancellation and offline reload are recorded in Browser STT's VALIDATION.md. The desktop single-clip probe's roughly threefold throughput gain is not a physical iPhone, first-word, release-delay, memory or battery measurement. Even host thread availability remains unverified on hardware.
+
 ## Voice latency — 2026-11-20
 
 Version 0.8.171 starts loading Mini on opening Ask and submits changed live/final transcription text immediately. Existing serialized native calls and latest-frame coalescing remain in use. Preloading yields to the pane, is cancelled by closing it, skips hidden panes and PDF preparation, and respects remote voice/continue-without-voice settings. Model weights, memory settings and saved verification remain unchanged.

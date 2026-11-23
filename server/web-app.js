@@ -18,7 +18,8 @@ export function createWebApp({ distDir, upstream, upstreamToken, allowedLogin, h
     if (!local && (req.hostname !== hostname || !allowedLogin || req.get('Tailscale-User-Login') !== allowedLogin)) return res.status(403).send('Open this reader through your own Tailscale account.');
     if (req.get('Origin') && req.get('Origin') !== `${local ? req.protocol : 'https'}://${req.get('host')}`) return res.sendStatus(403);
     res.set({ 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store',
-      'Permissions-Policy': 'microphone=(self), camera=(self)', 'X-Frame-Options': 'DENY' });
+      'Permissions-Policy': 'microphone=(self), camera=(self)', 'X-Frame-Options': 'DENY',
+      'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' });
     next();
   });
   app.get('/web/config', (req, res) => {

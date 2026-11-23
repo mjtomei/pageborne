@@ -58,6 +58,12 @@ export class SpeechUI {
   setStorage(kv) { this.storage.configure(kv); }
   async releaseForReading() {
     const generation = this.idleGeneration = (this.idleGeneration || 0) + 1;
+    // A preload can still be fetching uncached weights. No inference worker or
+    // preparation marker exists yet, so abort downloads instead of making the
+    // document wait for the network. close() also invalidates queued prepares.
+    if (!Object.values(this.models.entries).some(entry => entry.state === 'loading')) {
+      this.models.close(); return;
+    }
     // Finish a shared preparation before unloading so its durable interrupted
     // marker is not stranded. A new recording revokes this release.
     await this.models.loading.catch(() => {});
@@ -99,7 +105,7 @@ export class SpeechUI {
       const snapshot = { backend: this.backend, ensemble: entries.length > 1,
         storage: { kind: this.models.store.storageKind, ...this.models.store.stats,
           files: [...this.models.store.files.values()].map(({ url, ...file }) => ({ ...file })) },
-        models: Object.fromEntries(entries.map(e => [e.model.id, { state: e.state, progress: e.progress.slice(0, 200), downloadBytes: e.downloadBytes, totalBytes: e.totalBytes, setup: { ...e.setup }, verified: e.verified, verification: e.ready?.verification, wasmBytes: e.ready?.wasmBytes }])) };
+        models: Object.fromEntries(entries.map(e => [e.model.id, { state: e.state, progress: e.progress.slice(0, 200), downloadBytes: e.downloadBytes, totalBytes: e.totalBytes, setup: { ...e.setup }, verified: e.verified, verification: e.ready?.verification, wasmBytes: e.ready?.wasmBytes, backend: e.ready?.backend, threads: e.ready?.threads }])) };
       this.diagnostics.speech = snapshot;
       const phase = entries.map(e => `${e.state}:${e.setup.stage}:${e.setup.file || ''}:${e.setup.component || ''}:${Math.floor(e.setup.loadedBytes / 8e6)}`).join(',');
       if (phase !== this.loggedModelPhase) { this.loggedModelPhase = phase; this.diagnostics.log('speech-model-state', snapshot); }

@@ -55,12 +55,24 @@ try {
     args: engine === chromium ? ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--js-flags=--max-old-space-size=384'] : [] });
   try { for (const viewport of [{ width:393,height:852 },{ width:834,height:1194 },{ width:1440,height:900 }]) {
    const page = await browser.newPage({ viewport }); const errors=[]; page.on('pageerror',e=>errors.push(e.message));
+   // Exercise a slow voice preload without downloading model weights. Reading
+   // must remain usable when the user leaves Ask for a PDF during this request.
+   let modelDownloads = 0;
+   await page.route('https://huggingface.co/**', () => { modelDownloads++; });
+   if (process.env.WEB_TRACE) {
+    page.on('console', m => console.log(m.type(), m.text().slice(0, 1000)));
+    page.on('requestfailed', r => console.log('request-failed', new URL(r.url()).pathname, r.failure()));
+    page.on('worker', w => console.log('worker', w.url()));
+   }
    let startupAttempts = 0;
    if (built) await page.route(/\/assets\/main-[\w-]+\.js$/, async route => { if (++startupAttempts === 1) await route.abort('failed'); else await route.continue(); });
    try {
     await page.goto(baseUrl, { waitUntil: 'commit', timeout: 30000 });
     await expect(page.locator('[data-document-id="paper.md"]')).toBeAttached({ timeout:30000 });
-    if (built) { assert.equal(startupAttempts, 2); assert.equal(await page.locator('link[rel="modulepreload"]').count(), 0); }
+    if (built) {
+      assert.equal(startupAttempts, 2); assert.equal(await page.locator('link[rel="modulepreload"]').count(), 0);
+      assert.equal(await page.evaluate(() => crossOriginIsolated && typeof SharedArrayBuffer === 'function'), true, 'private web reader permits WASM threads');
+    }
     await page.locator('[data-document-id="paper.md"] .document-card').click();
     await expect(page.locator('#preview')).toBeVisible();
     await expect(page.locator('#passage')).toContainText('formatted');
@@ -93,6 +105,7 @@ try {
     await page.setViewportSize(viewport);
     await page.locator('#ask-open').click();
     await expect(page.locator('#ask-messages')).toContainText('existing desktop session', {timeout:15000});
+    await expect.poll(() => modelDownloads, {timeout:15000}).toBeGreaterThan(0);
     await expect(page.locator('#ask-messages')).not.toContainText('Checking the relevant passage.');
     await expect(page.locator('.ask-message-activity')).toHaveCount(1);
     await expect(page.locator('#ask-chat-model')).toHaveValue('codex');
@@ -101,7 +114,7 @@ try {
     await page.locator('#ask-open').click();
     turns = [...turns,{id:'external',question:'Sent elsewhere',answer:'A synchronized reply.',state:'complete'}];
     if (!built) await page.evaluate(()=>window.__askUI.pollFooter());
-    await expect(page.locator('#ask-messages')).toContainText('Sent elsewhere');
+    await expect(page.locator('#ask-messages')).toContainText('Sent elsewhere', {timeout:15000});
     await page.locator('#ask-question').fill('Unified first question'); await page.locator('#ask-send').click();
     await expect.poll(() => prompts.length).toBe(1);
     await page.locator('#ask-question').fill('Follow-up while busy'); await page.locator('#ask-send').click();
@@ -109,8 +122,8 @@ try {
     assert(prompts.every(p => p.sessionId === 'shared-paper'));
     turns.at(-2).state = 'complete'; turns.at(-2).answer = 'First answer';
     turns.at(-1).state = 'complete'; turns.at(-1).answer = 'Second answer'; busy = false;
-    await expect(page.locator('#ask-messages')).toContainText('First answer');
-    await expect(page.locator('#ask-answer')).toHaveText('Second answer');
+    await expect(page.locator('#ask-messages')).toContainText('First answer', {timeout:15000});
+    await expect(page.locator('#ask-answer')).toHaveText('Second answer', {timeout:15000});
     if (!built && engine === chromium) {
       // Real browser microphone + AudioWorklet; substitute only model inference.
       await page.evaluate(() => {

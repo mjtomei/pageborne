@@ -32,7 +32,7 @@ test('one WAV per spoken input with pinned models, dispatch dictionaries, hypoth
   const pcm = new Uint8Array(300000).map((_, i) => i % 255); archive.receive(pcm);
   const dictionary = ['Licklider', 'Taylor']; archive.hints(r, dictionary, ['handoff.md']);
   const finished = archive.decode(r, 'conformer', new Blob([pcm]), { vocabulary: dictionary, partial: false, chunkSeconds: 20 }, { offset: 0, length: pcm.length });
-  dictionary.push('later mutation'); finished({ text: 'phone prediction', transcribeMs: 400 });
+  dictionary.push('later mutation'); finished({ text: 'phone prediction', transcribeMs: 400, backend: 'wasm', threads: 4 });
   archive.stop(r, pcm.length); archive.recognition(r, { text: 'phone prediction', models: ['conformer'] }, 'phone prediction', [{ id: 'conformer', text: 'phone prediction' }]);
   archive.sent(r, 'possibly edited text', 'turn-1', 'session-1'); await wait(archive);
   const folder = path.join(root, r.id), wav = await readFile(path.join(folder, 'audio.wav'));
@@ -45,6 +45,8 @@ test('one WAV per spoken input with pinned models, dispatch dictionaries, hypoth
   assert.deepEqual(record.metadata.vocabulary, ['Licklider', 'Taylor']);
   assert.deepEqual(record.metadata.reproduction.dictionaries, [['Licklider', 'Taylor']]);
   assert.equal(record.metadata.reproduction.decodes[0].outputText, 'phone prediction');
+  assert.equal(record.metadata.reproduction.decodes[0].threads, 4);
+  assert.equal(record.metadata.reproduction.decodes[0].backend, 'wasm');
   assert.equal(record.metadata.reproduction.models[0].files[0].sha256, 'pinned-hash');
   await store.chunk(r.id, '0', { pcm: Buffer.from(pcm.subarray(0, 256000)).toString('base64') });
   assert.deepEqual([...await readdir(folder)].sort(), ['audio.wav', 'record.json'], 'idempotent retries do not recreate duplicate audio');
