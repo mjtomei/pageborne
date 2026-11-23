@@ -284,3 +284,12 @@ test('a timeout has a specific glasses label without replacing the conversation'
   s.fail(new Error('Agent failed')); assert.equal(s.frame().statusLeft, 'Ask error');
   s.setStatus('answer'); assert.equal(s.frame().statusLeft, 'Ask');
 });
+
+
+test('Ask error advertises retry only with a retained failed send', () => {
+  const session = new AskSession(); session.open({}); session.fail(new Error('Disconnected'));
+  assert.match(session.frame({ retry: true }).statusRight, /Hold to retry/);
+  assert.match(session.frame({ retry: true }).body, /Hold to retry/);
+  assert.match(session.frame().statusRight, /Hold: speak/);
+  assert.doesNotMatch(session.frame().body, /Hold to retry/);
+});

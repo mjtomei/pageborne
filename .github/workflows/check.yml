@@ -38,6 +38,7 @@ jobs:
           ASK_BROWSER=chromium npm run test:ask-unread
           ASK_BROWSER=chromium npm run test:ask-sync
           ASK_BROWSER=chromium npm run test:ask-followups
+          ASK_BROWSER=chromium npm run test:ask-retry
           npm run test:phone-microphone
           VOICE_BROWSER=chromium npm run test:voice-latency
           ASK_BROWSER=chromium npm run test:ask-models

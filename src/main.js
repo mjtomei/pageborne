@@ -1874,6 +1874,7 @@ function animate(now, immediate = false) {
       nativePdf: footnotesView.layout ? pdfNativeWindow(footnotesView.layout, footnotesView.y) : null,
       message: footnotesView.layout ? null : { body: 'No recognized footnotes in this document.\n\nTap to return to your place.', status: 'Footnotes · Tap to return' } });
     frame.askStatus = askUI?.footerStatus();
+    frame.askRetry = askUI?.canRetry();
     frame.askUnavailable = !!askUI?.unavailableReason;
     frame.voiceUnavailable = !!askUI?.speech.setup.suspended && askUI.speech.backend !== 'remote';
     frame.dialog = askUI?.session.active ? askUI.session.dialog() : null;
@@ -1915,7 +1916,7 @@ function animate(now, immediate = false) {
     if (!glasses.bridge && !window.flutter_inappwebview?.callHandler) sampleReading(frame, now);
     if (!glasses.bridge && !window.flutter_inappwebview?.callHandler && !document.hidden) askUI?.acceptFrame(frame);
     if (!layout || rowAt(layout, reader.y) !== lastPassage) renderPassage();
-    const key = `${active?.id}:${Math.floor(frame.y)}:${frame.mode}:${frame.playing}:${layout?.size}:${reader.speed}:${frame.nativePdf?.reveal}:${frame.wordFrame?.start}:${frame.wordFrame?.end}:${frame.wordRate}:${frame.finished}:${frame.pauseAtTitles}:${frame.pageRemainingSeconds}:${positionPicker ? `position-${positionPicker.kind}-${positionPicker.index}-${positionPicker.percent}-${positionPicker.step}-${positionPicker.entries?.length}` : picker ? documentPickerText(picker) : 'reader'}:${librarySyncLabel}:${!!librarySync}:${frame.message?.body || ''}:${frame.message?.status || ''}:${frame.message?.statusCenter || ""}:${frame.message?.statusLeft || ""}:${frame.message?.statusRight || ""}:${JSON.stringify(frame.dialog || null)}:${frame.modePicker?.index ?? ''}:${!!footnotesView}:${frame.askStatus}:${frame.askUnavailable}:${frame.voiceUnavailable}`;
+    const key = `${active?.id}:${Math.floor(frame.y)}:${frame.mode}:${frame.playing}:${layout?.size}:${reader.speed}:${frame.nativePdf?.reveal}:${frame.wordFrame?.start}:${frame.wordFrame?.end}:${frame.wordRate}:${frame.finished}:${frame.pauseAtTitles}:${frame.pageRemainingSeconds}:${positionPicker ? `position-${positionPicker.kind}-${positionPicker.index}-${positionPicker.percent}-${positionPicker.step}-${positionPicker.entries?.length}` : picker ? documentPickerText(picker) : 'reader'}:${librarySyncLabel}:${!!librarySync}:${frame.message?.body || ''}:${frame.message?.status || ''}:${frame.message?.statusCenter || ""}:${frame.message?.statusLeft || ""}:${frame.message?.statusRight || ""}:${JSON.stringify(frame.dialog || null)}:${frame.modePicker?.index ?? ''}:${!!footnotesView}:${frame.askStatus}:${frame.askRetry}:${frame.askUnavailable}:${frame.voiceUnavailable}`;
     const timedWords = frame.mode === 'speed' && frame.playing && frame.wordFrame && !frame.dialog && !frame.modePicker;
     if (key !== lastSentKey && (immediate || timedWords || now - lastSend >= 120)) {
       glasses.submit(frame); lastSentKey = key; lastSend = now;

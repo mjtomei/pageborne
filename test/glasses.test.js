@@ -633,3 +633,14 @@ test('only commands dim while footer status, icons, time and page numbers stay b
     assert(getTextWidth(commands.content) <= commands.width);
   }
 });
+
+
+test('retry hint fits beside long source page numbers in every reading mode', () => {
+  const layout = { format: 'pdf', rows: [], blocks: [{ y: 0, drawHeight: 1000, page: 9999 }], maxY: 900 };
+  for (const mode of ['page', 'auto', 'speed']) {
+    const text = statusText({ layout, mode, y: 0, wordRate: 6000, speed: 200, playing: true,
+      remainingSeconds: 7200, askStatus: 'Ask failed', askRetry: true, voiceUnavailable: true });
+    assert.match(text, /Hold to retry/); assert.doesNotMatch(text, /speak|Voice paused/);
+    assert.match(text, /pg\. 9999/); assert(getTextWidth(text) <= 552, text);
+  }
+});

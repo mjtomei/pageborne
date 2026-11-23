@@ -193,14 +193,14 @@ export class AskSession {
     if (['starting', 'listening', 'transcribing'].includes(this.status)) return liveTranscriptionDialog(this.status, this.voiceDraft, this.voiceProgress, this.phase, this.voiceLine, this.voiceWords);
     return null;
   }
-  frame() {
+  frame({ retry = false } = {}) {
     const label = this.context?.scope === 'terminal-session' ? 'Even Terminal' : this.context?.scope === 'library' ? 'Librarian' : 'Ask';
     const status = this.status;
     const partial = status === 'thinking' && this.answer;
     const dots = '.'.repeat((this.phase || 0) + 1);
     const conversationFrame = this.conversation?.window(this.y);
     const body = this.layout ? (conversationFrame || textWindow(this.layout, this.y)).content
-      : status === 'error' ? `Could not ask.\n\n${this.error}\n\nHold to retry, or type on your phone.`
+      : status === 'error' ? `Could not ask.\n\n${this.error}\n\n${retry ? 'Hold to retry.' : 'Hold to speak, or type on your phone.'}`
       : `${label === 'Even Terminal' ? this.context.title : label === 'Librarian' ? 'Librarian' : 'Ask about this'}\n\nHold to speak, or type your question on the phone.\n\nTap to return to ${label === 'Even Terminal' ? 'sessions' : label === 'Librarian' ? 'the library' : 'reading'}.`;
     let footer = status === 'starting' ? `Starting microphone${dots}`
       : status === 'listening' ? `Listening${dots}`
@@ -213,7 +213,7 @@ export class AskSession {
     return { kind: 'ask', body: this.layout ? body : textWindow(nativeLayout(parseDocument(body)), 0).content,
       status: titleText(`${label} · ${footer}`),
       statusLeft: status === 'thinking' ? titleText(this.progressText || `${partial ? 'Writing' : 'Thinking'}${dots}`, 260) : status === 'error' ? this.errorKind === 'timeout' ? 'Request timed out' : `${label} error` : label,
-      statusRight: 'Hold: speak · Tap: back',
+      statusRight: `${retry ? 'Hold to retry' : 'Hold: speak'} · Tap: back`,
       statusCenter: conversationFrame?.page ? `${conversationFrame.page} / ${conversationFrame.pages}` : '',
       ...(conversationFrame ? { alignments: conversationFrame.alignments, readReceipts: conversationFrame.readReceipts,
         readingUnits: conversationFrame.readingUnits, readingPane: conversationFrame.start, readingPage: conversationFrame.page } : {}), ...(dialog ? { dialog } : {}) };

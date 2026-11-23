@@ -32,6 +32,8 @@ export class AskUI {
     this.glassesVisible = false; this.phoneVisible = false; this.replyUnread = false;
     this.chat = new AskChat(readChats, saveChats); this.reveal = reveal;
     this.deliveries = new Map();
+    this.sendAttempts = new Map();
+    this.retrying = new Set();
     this.replyViews = new Map();
     this.modelDrafts = new Map();
     this.sessionModels = new Map();
@@ -120,7 +122,7 @@ export class AskUI {
       this.retainModels();
       this.saveModels({ ...this.readModels(), defaultAgent: $('ask-default-model').value });
     };
-    $('ask-config-clear').onclick = () => { this.cancelPairing(); this.close(); this.bindingVersion++; for (const delivery of this.deliveries.values()) delivery.abort.abort(); this.deliveries.clear(); this.chat.clear(); this.replyViews.clear(); this.modelDrafts.clear(); this.sessionModels.clear(); saveConfig({}); saveBindings({}); this.load(); $('ask-config-status').textContent = 'Connection and local session links forgotten. Desktop conversations are kept.'; };
+    $('ask-config-clear').onclick = () => { this.cancelPairing(); this.close(); this.bindingVersion++; for (const delivery of this.deliveries.values()) delivery.abort.abort(); this.deliveries.clear(); this.sendAttempts.clear(); this.chat.clear(); this.replyViews.clear(); this.modelDrafts.clear(); this.sessionModels.clear(); saveConfig({}); saveBindings({}); this.load(); $('ask-config-status').textContent = 'Connection and local session links forgotten. Desktop conversations are kept.'; };
     $('ask-settings-link').onclick = () => showSettings();
     $('ask-mode').onchange = () => { this.cancelPairing(); this.fields(); };
     $('ask-pairing-use').onclick = () => this.importPairing($('ask-pairing-url').value);
@@ -356,7 +358,34 @@ export class AskUI {
     const view = (this.readingPhone ||= new AskPhoneReadingView()).sample($('ask-history'), this.renderedChat);
     return view && { ...this.readingContext(), ...view, surface: 'phone' };
   }
-  frame() { return { ...this.session.frame(), paperKey: this.paperKey, readingContext: this.readingContext() }; }
+  frame() { return { ...this.session.frame({ retry: this.canRetry() }), paperKey: this.paperKey, readingContext: this.readingContext() }; }
+  failedSend(key = this.currentPaperKey()) {
+    const attempt = this.sendAttempts.get(key);
+    if (!attempt) return null;
+    const turn = this.chat.turns(key).find(turn => turn.id === attempt.turnId);
+    if (attempt.version !== this.bindingVersion || attempt.linkVersion !== this.linkVersions.get(key)
+      || !turn || turn.state === 'complete') {
+      this.sendAttempts.delete(key); return null;
+    }
+    return attempt.failed ? attempt : null;
+  }
+  canRetry() {
+    const key = this.currentPaperKey();
+    const binding = this.readBindings()[key];
+    return !!this.failedSend(key) || this.retrying.has(key) || !!(binding?.pending &&
+      (binding.notification === 'error' || this.session.active && this.paperKey === key && this.session.status === 'error'));
+  }
+  async retrySend() {
+    const key = this.currentPaperKey(), attempt = this.failedSend(key);
+    if (!this.canRetry() || this.retrying.has(key)) return;
+    this.retrying.add(key);
+    try {
+      if (!this.open({ showConversation: false, dictation: true }) || this.paperKey !== key
+        || this.session.dialog() || this.session.abort || this.deliveries.has(key)) return;
+      if (attempt && this.failedSend(key) === attempt) await this.sendAttempt(attempt);
+      else if (this.binding().pending) await this.checkReply();
+    } finally { this.retrying.delete(key); this.render(); this.changed(); }
+  }
   acceptFrame(frame) {
     const message = frame.message;
     if (!this.glassesVisible || frame.modePicker || message?.kind !== 'ask' || message.paperKey !== this.paperKey) return;
@@ -379,6 +408,9 @@ export class AskUI {
     return { context: askContext(layout, y, title, wordFrame, 1000), history: this.chat.vocabularyHistory(key) };
   }
   async hold(source = this.options().evenHost ? 'glasses' : 'phone') {
+    // A held retry never becomes a recording, even when another hold arrives
+    // while its POST or reply check is still in flight.
+    if (this.canRetry() && !this.session.dialog()) { await this.retrySend(); return; }
     if (!this.unavailableReason && !this.speech.setup.blocked && this.speech.setup.suspended && this.speech.backend !== 'remote') {
       void this.speech.retrySetup(); return;
     }
@@ -545,9 +577,18 @@ export class AskUI {
     this.dictationReturn = null;
     this.replyUnread = false;
     this.chatFollowing = true; $('ask-question').value = ''; this.modelDrafts.delete(this.paperKey);
-    const key = this.paperKey; const config = this.config; const save = this.bindingWriter(key);
-    this.session.history = this.chat.history(key);
-    await this.session.send(question, async (body, signal, progress) => {
+    const attempt = { key: this.paperKey, config: structuredClone(this.config), question, turnId, current, librarian, terminalSession,
+      body: { context: structuredClone(this.session.context), question, history: this.chat.history(this.paperKey).slice(-8) },
+      version: this.bindingVersion, linkVersion: this.linkVersions.get(this.paperKey) };
+    this.sendAttempts.set(this.paperKey, attempt);
+    await this.sendAttempt(attempt);
+  }
+  async sendAttempt(attempt) {
+    const { key, config, question, turnId, current, librarian, terminalSession, body } = attempt;
+    const desktop = connectionMode(config) === 'terminal', save = this.bindingWriter(key);
+    attempt.failed = false;
+    this.turnId = turnId; this.session.context = structuredClone(body.context); this.session.history = body.history;
+    await this.session.send(question, async (_body, signal, progress) => {
       const mode = connectionMode(config);
       if (mode === 'bridge') return askFetch(config, 'ask', { ...this.options(), body, signal });
       if (mode === 'provider') return providerAnswer(config, body, signal, this.options());
@@ -566,12 +607,22 @@ export class AskUI {
       };
       delivery.submission = (previous?.submission || Promise.resolve()).catch(() => {}).then(() => {
         if (delivery.abort.signal.aborted) throw new Error('Question cancelled.');
+        // A lost acknowledgement is not evidence of rejection. Resume the
+        // original marker instead of issuing a second POST for this turn.
+        const binding = this.readBindings()[key];
+        if (binding?.pending?.turnId === turnId) return binding;
+        if (attempt.accepted) throw new Error('This question was already sent. Check the desktop session for its result.');
         return client.submit({ ...body, turnId, ...(librarian || terminalSession ? {} : { paper: () => paperAttachments(current), paperId: this.paperIdentity(current.paperId) }) }, this.readBindings()[key], save, delivery.abort.signal, update);
       });
+      let acknowledged = false;
       try {
         const binding = await delivery.submission;
+        acknowledged = true;
+        attempt.accepted = true;
         return await client.reply(binding, save, signal, update);
       } catch (error) {
+        if (!delivery.abort.signal.aborted && (!signal.aborted || !acknowledged)
+          && (!attempt.accepted || this.readBindings()[key]?.pending?.turnId === turnId)) attempt.failed = true;
         if (!delivery.abort.signal.aborted && !signal.aborted && this.readBindings()[key]?.pending?.turnId !== turnId) {
           this.chat.update(key, turnId, '', 'error'); save({ ...this.readBindings()[key], notification: 'error' });
         }
@@ -579,7 +630,9 @@ export class AskUI {
         throw error;
       } finally { if (this.deliveries.get(key) === delivery) this.deliveries.delete(key); this.renderFooter(); }
     }, { replace: desktop });
+    if (!attempt.failed && this.sendAttempts.get(key) === attempt) this.sendAttempts.delete(key);
     if (this.session.active && this.paperKey === key && this.session.status === 'answer' && this.glassesVisible) this.acknowledgeReply();
+    this.changed();
   }
   binding() { return this.readBindings()[this.paperKey] || {}; }
   receiveSessionModel(key, conversation) {
@@ -617,7 +670,7 @@ export class AskUI {
       try { if (JSON.parse(key)[0] !== paperId) continue; } catch { continue; }
       this.deliveries.get(key)?.abort.abort(); this.deliveries.delete(key);
       this.linkVersions.set(key, (this.linkVersions.get(key) || 0) + 1); this.saveBinding(key, null); this.chat.forget(key);
-      this.replyViews.delete(key);
+      this.replyViews.delete(key); this.sendAttempts.delete(key);
       this.modelDrafts.delete(key);
       this.sessionModels.delete(key);
     }
@@ -815,7 +868,7 @@ export class AskUI {
     this.resetChat(); this.saveBinding(this.paperKey, cwd == null ? null : { cwd }); this.session.setStatus('ready');
   }
   resetChat() {
-    this.chat.forget(this.paperKey); this.replyViews.delete(this.paperKey); this.turnId = null;
+    this.chat.forget(this.paperKey); this.replyViews.delete(this.paperKey); this.sendAttempts.delete(this.paperKey); this.turnId = null;
     this.modelDrafts.delete(this.paperKey);
     this.session.responseStatus = null; this.session.responseError = null;
     this.session.history = []; this.session.answer = this.session.displayAnswer = ''; this.session.syncConversation([]); this.session.y = 0;
@@ -865,7 +918,7 @@ export class AskUI {
     const turnId = this.chat.reconcile(key, binding);
     const turn = this.chat.turns(key).find(t => t.id === turnId);
     this.chat.update(key, turnId, turn?.answer || '', 'error');
-    this.replyViews.delete(key);
+    this.replyViews.delete(key); this.sendAttempts.delete(key);
     this.saveBinding(key, { ...binding, pending: undefined, notification: undefined, idleCandidate: undefined });
     this.session.responseStatus = 'ready'; this.session.responseError = null;
     this.session.progressText = ''; this.session.setStatus('ready');
@@ -1028,7 +1081,7 @@ export class AskUI {
     $('ask-send').disabled = !!this.unavailableReason || ['starting', 'listening', 'transcribing'].includes(s.status) || !!s.abort && !desktop || !!s.review && !s.review.text;
     $('ask-voice').disabled = !!this.unavailableReason || s.status === 'transcribing';
     const listening = ['starting', 'listening'].includes(s.status);
-    const voiceLabel = listening ? 'Review voice question' : this.options().evenHost ? 'Start dictation from glasses' : 'Start dictation';
+    const voiceLabel = listening ? 'Review voice question' : this.canRetry() ? 'Retry failed send' : this.options().evenHost ? 'Start dictation from glasses' : 'Start dictation';
     $('ask-voice').setAttribute('aria-label', voiceLabel); $('ask-voice').title = voiceLabel;
     $('ask-voice').setAttribute('aria-pressed', String(listening));
     if (s.status === 'thinking' && !s.abort && !this.deliveries.has(this.paperKey) && binding.pending?.submitted && binding.sessionId) {

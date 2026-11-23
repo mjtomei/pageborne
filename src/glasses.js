@@ -90,6 +90,7 @@ function askNotification(frame) {
   // Compact double-tap wording before removing spaces around the colons.
   const prefix = !frame.askUnavailable && symbol ? `${symbol} ` : '';
   const candidates = frame.askUnavailable ? ['Ask after loading', 'Ask unavailable']
+    : frame.askRetry ? [`${prefix}Hold to retry · ${taps.at(-1)}: Ask`, `${prefix}Hold to retry`]
     : frame.voiceUnavailable ? taps.map(tap => `Voice paused · ${tap}: Ask`)
     : [...taps.map(tap => `${prefix}Hold: speak · ${tap}: Ask`),
       `${prefix}Hold:speak · ${taps.at(-1)}: Ask`, `${prefix}Hold:speak · ${taps.at(-1)}:Ask`];

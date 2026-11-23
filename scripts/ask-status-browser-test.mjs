@@ -8,7 +8,7 @@ import { displayProbe } from './display-probe.mjs';
 
 process.env.PAGEBORNE_ASK_ORIGINS = 'https://status.test';
 const out='test-results/ask-status'; await mkdir(out,{recursive:true});
-const vite=await createServer({plugins:[displayProbe(),{name:'short-fixture-reply-timeout',transform(code,id){if(id.endsWith('/src/ask-terminal.js'))return code.replaceAll('timeoutMs: 15000','timeoutMs: 120');}}],cacheDir:'.state/vite-ask-status',server:{host:'127.0.0.1',port:0,hmr:false,watch:{usePolling:true}},clearScreen:false});await vite.listen();
+const vite=await createServer({plugins:[displayProbe(),{name:'short-fixture-reply-timeout',transform(code,id){if(id.endsWith('/src/ask-terminal.js'))return code.replaceAll('timeoutMs: 15000','timeoutMs: 120');}}],cacheDir:'.state/vite-ask-status',optimizeDeps:{entries:['index.html']},server:{host:'127.0.0.1',port:0,hmr:false,watch:null},clearScreen:false});await vite.listen();
 const results=[];
 try {
   for(const engine of [chromium,webkit]) {
@@ -45,6 +45,7 @@ try {
         if(url.pathname==='/api/info')return json({provider:'codex'});
         if(url.pathname==='/api/events')return route.fulfill({headers,contentType:'text/event-stream',body:': connected\n\n'});
         if(url.pathname.endsWith('/history'))return json({history:[]});
+        if(req.method()==='GET' && ['/api/pageborne/library','/api/pageborne/library/activity','/api/pageborne/reading-activity','/api/pageborne/reader-state'].includes(url.pathname))return route.fulfill({status:404,headers,json:{}});
         if(url.pathname==='/api/messages') {
           polls++;
           if(transport==='network')return route.abort('failed');
@@ -101,7 +102,7 @@ try {
       await page.locator('#ask-question').fill('Recover this reply without resending');await page.locator('#ask-send').click();
       await expect.poll(()=>page.evaluate(()=>window.__askUI.session.status)).toBe('error');await stop();
       assert.equal(prompts.length,1);assert.equal(await status(),'Reply pending');
-      await poll();assert.equal(await status(),'Reconnecting…');await expect.poll(native).toContain('↔ Hold: speak · Tap: Ask');
+      await poll();assert.equal(await status(),'Reconnecting…');await expect.poll(native).toContain('↔ Hold to retry · Tap: Ask');
       transport='ok';state='idle';messages.push({id:messages.length+1,type:'result',success:true,text:'Recovered after a network interruption.'});
       // The phone can miss several turns while disconnected. Recover its own
       // completed answer first; the later desktop prompt is not a conflict.
