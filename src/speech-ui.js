@@ -12,7 +12,7 @@ export class SpeechUI {
   constructor({ read, save, changed, diagnostics, readVocabulary = () => '', saveVocabulary = () => {}, readContextVocabulary = () => true, saveContextVocabulary = () => {}, vocabularyContext = () => ({}) }) {
     Object.assign(this, { read, save, changed, diagnostics, readVocabulary, readContextVocabulary, vocabularyContext });
     this.storage = deferredSpeechStore();
-    this.models = new EnsembleSpeech({ modelIds: ['fluid-mini'], store: this.storage.store, verificationDevice: speechDeviceIdentity(),
+    this.models = new EnsembleSpeech({ modelIds: ['fluid-mini'], miniAcceleration: 'auto', store: this.storage.store, verificationDevice: speechDeviceIdentity(),
       checkpoint: () => this.diagnostics?.flushCheckpoint?.(),
       changed: () => this.renderModels(), failure: (error, backend, model) => this.failure(error, backend, model) });
     this.setup = new SpeechSetup(this.models);
@@ -69,8 +69,19 @@ export class SpeechUI {
     await this.models.loading.catch(() => {});
     if (generation === this.idleGeneration) this.models.close();
   }
-  stream(options) { return new EnsembleStream({ ...options, models: { entries: this.models.entries,
-    prepare: (id, options) => this.models.prepare(id, options), transcribe: (id, audio, options) => this.transcribe(id, audio, options) } }); }
+  stream(options = {}) {
+    const updateBatching = (id, ready) => {
+      const member = stream.streams?.get(id);
+      // A fast backend can afford frequent drafts. Batch retained overlap on
+      // the single-thread CPU fallback without delaying GPU/parallel drafts.
+      if (member && ready?.backend && options.streamOptions?.batchOverlaps === undefined) member.batchOverlaps = ready.backend === 'wasm' && ready.threads === 1;
+      return ready;
+    };
+    const stream = new EnsembleStream({ ...options, streamOptions: { batchOverlaps: true, ...options.streamOptions }, models: { entries: this.models.entries,
+      prepare: async (id, prepareOptions) => updateBatching(id, await this.models.prepare(id, prepareOptions)),
+      transcribe: async (id, audio, transcribeOptions) => updateBatching(id, await this.transcribe(id, audio, transcribeOptions)) } });
+    return stream;
+  }
   vocabulary(context, history) { return vocabularyWords(speechVocabulary(this.readVocabulary(), this.readContextVocabulary() !== false ? context : null, history)); }
   filenames(context, history) { return speechFilenames(this.readVocabulary(), this.readContextVocabulary() !== false ? context : null, history); }
   previewVocabulary() {
@@ -102,10 +113,10 @@ export class SpeechUI {
     this.setup?.render();
     const entries = Object.values(this.models.entries);
     if (this.diagnostics?.enabled) {
-      const snapshot = { backend: this.backend, ensemble: entries.length > 1,
+      const snapshot = { backend: this.backend === 'remote' ? 'remote' : entries.find(e => e.ready)?.ready.backend || this.backend, ensemble: entries.length > 1,
         storage: { kind: this.models.store.storageKind, ...this.models.store.stats,
           files: [...this.models.store.files.values()].map(({ url, ...file }) => ({ ...file })) },
-        models: Object.fromEntries(entries.map(e => [e.model.id, { state: e.state, progress: e.progress.slice(0, 200), downloadBytes: e.downloadBytes, totalBytes: e.totalBytes, setup: { ...e.setup }, verified: e.verified, verification: e.ready?.verification, wasmBytes: e.ready?.wasmBytes, backend: e.ready?.backend, threads: e.ready?.threads }])) };
+        models: Object.fromEntries(entries.map(e => [e.model.id, { state: e.state, progress: e.progress.slice(0, 200), downloadBytes: e.downloadBytes, totalBytes: e.totalBytes, setup: { ...e.setup }, verified: e.verified, verification: e.ready?.verification, wasmBytes: e.ready?.wasmBytes, backend: e.ready?.backend, threads: e.ready?.threads, adapter: e.ready?.adapter, accelerationFallback: e.ready?.accelerationFallback, accelerationFailure: e.ready?.accelerationFailure }])) };
       this.diagnostics.speech = snapshot;
       const phase = entries.map(e => `${e.state}:${e.setup.stage}:${e.setup.file || ''}:${e.setup.component || ''}:${Math.floor(e.setup.loadedBytes / 8e6)}`).join(',');
       if (phase !== this.loggedModelPhase) { this.loggedModelPhase = phase; this.diagnostics.log('speech-model-state', snapshot); }

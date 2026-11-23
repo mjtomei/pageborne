@@ -66,6 +66,7 @@ export class AskUI {
     this.speech.observeTranscription = (id, audio, options) => {
       const stream = this.stream.streams?.get(id), window = {};
       for (const key of ['offset', 'length', 'base', 'completedEnd', 'windowSeconds', 'overlapSeconds', 'intervalMs', 'minAudioBytes', 'firstAudioBytes']) if (typeof stream?.[key] === 'number') window[key] = stream[key];
+      if (stream) { window.batchOverlaps = !!stream.batchOverlaps; window.overlapBytes = stream.overlapBytes; }
       return this.recordings.decode(this.voiceRecording, id, audio, options, window);
     };
     this.stream = this.speech.stream({ backlog: () => { void this.release(); },

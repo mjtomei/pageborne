@@ -43,6 +43,31 @@ try {
       await page.route('https://voice-latency.test/**', route => route.fulfill({ json: {}, headers: { 'Access-Control-Allow-Origin': '*' } }));
       await page.goto(vite.resolvedUrls.local[0]);
       await expect(page.locator('#import')).toBeEnabled({ timeout: 30000 });
+      assert.equal(await page.evaluate(() => window.__askUI.stream.streamOptions.batchOverlaps), true, 'production voice batches already decoded overlaps');
+      report.backendBatching = await page.evaluate(async () => {
+        const speech = window.__askUI.speech, originalPrepare = speech.models.prepare, originalTranscribe = speech.transcribe;
+        const results = [];
+        try {
+          for (const ready of [{ backend: 'webgpu', threads: 1 }, { backend: 'wasm', threads: 4 }, { backend: 'wasm', threads: 1 }]) {
+            speech.models.prepare = async () => ready;
+            const stream = speech.stream({ result() {} }); stream.start();
+            try {
+              await stream.models.prepare('fluid-mini', {});
+              results.push(stream.streams.get('fluid-mini').batchOverlaps);
+              // GPU can fail mid-recording. Its CPU replay must enable batching
+              // before the next pass, not wait for a new recording.
+              speech.transcribe = async () => ({ backend: 'wasm', threads: 1 });
+              await stream.models.transcribe('fluid-mini', new Blob(), {});
+              results.push(stream.streams.get('fluid-mini').batchOverlaps);
+            } finally { stream.cancel(); }
+          }
+          const override = speech.stream({ result() {}, streamOptions: { batchOverlaps: false } }); override.start();
+          try { await override.models.prepare('fluid-mini', {}); results.push(override.streams.get('fluid-mini').batchOverlaps); }
+          finally { override.cancel(); }
+        } finally { speech.models.prepare = originalPrepare; speech.transcribe = originalTranscribe; }
+        return results;
+      });
+      assert.deepEqual(report.backendBatching, [false, true, false, true, true, true, false]);
       await page.locator('#file-picker').setInputFiles({ name: 'latency.md', mimeType: 'text/markdown', buffer: Buffer.from('# Latency\n\n' + 'Reading before asking a question. '.repeat(30)) });
       await showLibrary(page); await page.locator('[data-document-id="latency.md"] .document-card').click();
       await page.evaluate(() => {

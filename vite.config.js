@@ -86,7 +86,7 @@ export default defineConfig(({ mode }) => {
       generateBundle() { this.emitFile({ type: 'asset', fileName: 'ask-origins.json', source: JSON.stringify(profile.origins) }); },
     }, { name: 'word-frequency-data', generateBundle() {
       for (const file of readdirSync('vendor/wordfreq')) this.emitFile({ type: 'asset', fileName: `licenses/wordfreq/${file}`, source: readFileSync(`vendor/wordfreq/${file}`) });
-    } }, pdfResources(), speechAssets({ ensemble: true, refinement: false, benchmarks: false }), ocrResources(), ...(web ? [{ name: 'compressed-web-assets', writeBundle(options, bundle) {
+    } }, pdfResources(), speechAssets({ ensemble: true, refinement: false, benchmarks: false, acceleration: true }), ocrResources(), ...(web ? [{ name: 'compressed-web-assets', writeBundle(options, bundle) {
       for (const item of Object.values(bundle)) {
         if (!/\.(js|css)$/.test(item.fileName)) continue;
         // Vite finalizes preload references late in generateBundle. Compress

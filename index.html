@@ -132,7 +132,7 @@
             </details>
             <details id="settings-voice" class="settings-section">
             <summary class="section-summary"><span class="section-label">Voice input</span><span id="speech-backend-summary" class="section-status">On device</span></summary>
-            <label class="ask-field">Transcribe using<select id="speech-backend"><option value="wasm">On device · CPU / SIMD</option><option value="remote">Speech provider · configured endpoint</option></select></label>
+            <label class="ask-field">Transcribe using<select id="speech-backend"><option value="wasm">On device</option><option value="remote">Speech provider · configured endpoint</option></select></label>
             <label class="ask-field">Custom vocabulary<textarea id="speech-vocabulary" rows="3" maxlength="4000" placeholder="Pageborne, Kantorowicz, JEV" aria-describedby="speech-vocabulary-help"></textarea></label>
             <p id="speech-vocabulary-help" class="muted">Names and technical terms, separated by commas or new lines. Shared across documents and prioritized over automatic terms. Each model uses as many as it can fit. These guide local transcription; they do not force a spelling.</p>
             <label class="setting-row switch-row"><span>Use words from this paper and chat</span><input id="speech-context-vocabulary" type="checkbox" role="switch" checked></label>

@@ -20,7 +20,7 @@ npm run test:build-profiles
 
 Commit both package files. A fixed revision makes builds repeatable; normal installs do not follow a moving branch. To develop locally, clone Browser STT alongside this project, run `npm ci` there, then temporarily use `npm install --no-save --package-lock=false ../browser-stt`. Rebuild the engine after source edits. Do not commit that local override.
 
-Pageborne selects `modelIds: ['fluid-mini']` and retires only the superseded three speech models and their setup receipts. Mini uses the pinned ONNX/WASM implementation; its upstream attribution is in README.md and LICENSING.md. Original documents, reading history and chats are untouched.
+Pageborne selects `modelIds: ['fluid-mini']` with `miniAcceleration: 'auto'` and retires only the superseded three speech models and their setup receipts. Mini uses the pinned ONNX implementation, retaining multi-thread CPU when available and trying WebGPU otherwise with a fresh CPU fallback; its upstream attribution is in README.md and LICENSING.md. Original documents, reading history and chats are untouched.
 
 Pageborne owns the microphone/display integration, context vocabulary ranking and review/send UI. It imports the engine through its public package API. Native storage adapters remain in Pageborne; the engine also supports ordinary browser storage.
 

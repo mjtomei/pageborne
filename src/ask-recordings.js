@@ -66,7 +66,7 @@ export class AskRecordings {
     const prediction = value => {
       if (!value) return undefined;
       const result = {};
-      for (const key of ['text', 'words', 'models', 'model', 'backend', 'threads', 'seconds', 'transcribeMs', 'loadMs', 'unavailableModels', 'partial']) {
+      for (const key of ['text', 'words', 'models', 'model', 'backend', 'threads', 'adapter', 'seconds', 'transcribeMs', 'loadMs', 'unavailableModels', 'partial']) {
         if (value[key] != null) result[key] = value[key];
       }
       if (result.text) result.text = String(result.text).slice(0, 64000);
@@ -112,7 +112,7 @@ export class AskRecordings {
     return (response, error) => {
       pass.endedAt = new Date(this.now()).toISOString(); pass.outcome = error ? error.name === 'AbortError' ? 'cancelled' : 'error' : 'complete';
       if (response) {
-        pass.transcribeMs = response.transcribeMs; pass.backend = response.backend; pass.threads = response.threads;
+        pass.transcribeMs = response.transcribeMs; pass.backend = response.backend; pass.threads = response.threads; pass.adapter = response.adapter;
         pass.outputText = String(response.text || '').slice(0, 8000);
       }
       if (r.metadata.capture) this.update(r);
