@@ -7,6 +7,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { displayProbe } from './display-probe.mjs';
 import { AtomicPhoneValue } from '../src/phone-storage.js';
+// Dictation must work in CI without the developer's private pairing file.
+process.env.PAGEBORNE_ASK_ORIGINS = 'https://speech-startup.test';
 const out = 'test-results/speech-startup'; await mkdir(out, { recursive: true });
 const fixtures = ['fluid-mini'].map((id, i) => {
   const bytes = Buffer.alloc(96001 + i, 73 + i);
@@ -31,6 +33,7 @@ try {
     const storage = new Map(), report = { engine: engine.name(), passed: false, downloads: 0, errors: [] }; reports.push(report);
     const kv = { get: async key => storage.get(key) || '', set: async (key, value) => storage.set(key, value) };
     const savedReading = { updatedAt: 100, positions: { 'local\nkept.md': { percent: 42, sourceLine: 17 } },
+      ask: { mode: 'terminal', endpoint: 'https://speech-startup.test', token: 'fixture', agent: 'claude' },
       bookmarks: { 'local\nkept.md': [{ sourceLine: 8 }] },
       askSessions: { fixture: { sessionId: 'saved-session' } },
       askChats: { fixture: [{ id: 'saved-turn', question: 'Keep this question', answer: 'And this answer', state: 'complete' }] } };

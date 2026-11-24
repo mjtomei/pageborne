@@ -39,6 +39,7 @@ export class Diagnostics {
   constructor(storage, { enabled = true } = {}) {
     this.enabled = enabled; this.active = null;
     this.events = []; this.counts = {}; this.errors = []; this.previous = null; this.unfinishedSetups = [];
+    this.storageTraffic = {};
     // active still tracks pending bridge operations for display scheduling.
     // Release builds do not access storage, record errors or collect events.
     if (!enabled) return;
@@ -92,15 +93,28 @@ export class Diagnostics {
       try { this.onCheckpoint?.(); } catch {}
     }
   }
+  recordStorage(name, context, outcome, characters = 0) {
+    if (!this.enabled || !['storage-read', 'storage-write'].includes(name)) return;
+    const area = context.area || 'other';
+    const traffic = this.storageTraffic[area] ||= { reads: 0, writes: 0, readCharacters: 0, writtenCharacters: 0, errors: 0, timeouts: 0 };
+    if (outcome === 'ok') {
+      const read = name === 'storage-read';
+      traffic[read ? 'reads' : 'writes']++;
+      traffic[read ? 'readCharacters' : 'writtenCharacters'] += characters;
+    } else traffic[outcome === 'timeout' ? 'timeouts' : 'errors']++;
+    // Do not log/persist per chunk: the next ordinary event checkpoints these
+    // bounded counters without storing payloads or scheduling more writes.
+  }
   summary(limit = 12) {
     if (!this.enabled) return { version: VERSION, enabled: false };
     return { version: VERSION, renderer: this.renderer || 'native-text', startedAt: this.startedAt, active: this.active,
       userAgent: globalThis.navigator?.userAgent || 'test', environment: environment(),
       pdf: this.pdf || null, ask: this.ask || null, speech: this.speech || null, recordings: this.recordings || null, display: this.display || null, library: this.library || null, errors: this.errors,
       counts: { ...this.counts }, events: this.events.slice(-limit),
+      storageTraffic: Object.fromEntries(Object.entries(this.storageTraffic).map(([area, value]) => [area, { ...value }])),
       unfinishedSetups: this.unfinishedSetups,
       previousRun: this.previous ? { version: this.previous.version, startedAt: this.previous.startedAt, active: this.previous.active, pdf: this.previous.pdf,
-        ask: this.previous.ask, speech: this.previous.speech, display: this.previous.display,
+        ask: this.previous.ask, speech: this.previous.speech, display: this.previous.display, storageTraffic: this.previous.storageTraffic,
         events: this.previous.events?.slice(-12) } : null };
   }
 }
@@ -116,6 +130,7 @@ export class BridgeLane {
     // and never execute an expired write later against newer application state.
     timer = setTimeout(() => {
       expired = true;
+      this.diagnostics.recordStorage?.(name, context, 'timeout');
       this.diagnostics.log('bridge-timeout', { name, ...context, queued: !started });
       rejectTimeout(Object.assign(new Error(`${name} timed out. Close and reopen the reader if it stays pending.`),
         { code: 'bridge-timeout', operation: name, context, queued: !started }));
@@ -129,10 +144,12 @@ export class BridgeLane {
       try {
         const result = await operation();
         this.diagnostics.active = null;
+        this.diagnostics.recordStorage?.(name, context, 'ok', name === 'storage-read' ? typeof result === 'string' ? result.length : 0 : context.characters || 0);
         if (!quiet) this.diagnostics.log('bridge-ok', { name, ...context, ms: Math.round(performance.now() - startedAt) });
         return result;
       } catch (error) {
         this.diagnostics.active = null;
+        this.diagnostics.recordStorage?.(name, context, 'error');
         this.diagnostics.log('bridge-error', { name, ...context, code: error.code, message: String(error.message).slice(0, 300) });
         throw error;
       } finally { this.busy = false; this.diagnostics.active = null; clearTimeout(timer); }

@@ -193,6 +193,76 @@ test('position checkpoints avoid rewriting chats and restore across fresh origin
   assert.equal((await new PhonePreferences(kv).read({})).selected, undefined, 'clearing selection also persists');
 });
 
+test('sync timestamp and baseline updates checkpoint without rewriting unchanged chat history', async () => {
+  const kv = memoryPhone(), errors = [];
+  const state = { updatedAt: 100, askChats: { book: [{ answer: 'x'.repeat(700000) }] }, positions: { book: { percent: 40 } },
+    librarySync: { desktop: { at: 100, files: { 'book.pdf': 'a'.repeat(64) } } } };
+  await new AtomicPhoneValue(kv, 'preferences').write(state);
+  const preferences = new PhonePreferences(kv, error => errors.push(error)); await preferences.read({});
+  const set = kv.set.bind(kv), writes = []; kv.set = (key, text) => { writes.push([key, text.length]); return set(key, text); };
+  const next = { ...state, updatedAt: 200, librarySync: { desktop: { ...state.librarySync.desktop, at: 200 } } };
+  preferences.schedule(next); await preferences.flush();
+  assert(writes.every(([key]) => key.includes(':reading-position')));
+  assert.equal(writes.length, 2); assert(writes.reduce((sum, [, n]) => sum + n, 0) < 1000);
+  assert.deepEqual(await new PhonePreferences(kv).read({}), next, 'fresh origin restores chats, position and new sync time together');
+  assert.deepEqual(await new AtomicPhoneValue(kv, 'preferences').read(), state, 'large base is untouched');
+  writes.length = 0; preferences.schedule(next); await preferences.flush(); assert.equal(writes.length, 0, 'identical save is a no-op');
+  const changed = { ...next, updatedAt: 300, librarySync: { desktop: { at: 300, files: { 'replacement.pdf': 'b'.repeat(64) } } } };
+  preferences.schedule(changed); await preferences.flush();
+  assert.deepEqual(await new PhonePreferences(kv).read({}), changed, 'removed baseline entries do not reappear');
+  const chat = { ...changed, updatedAt: 400, askChats: { book: [{ answer: 'new conversation' }] } };
+  preferences.schedule(chat); await preferences.flush();
+  assert.deepEqual(await new PhonePreferences(kv).read({}), chat, 'new full preference save supersedes old checkpoint');
+  const cleared = { ...chat, updatedAt: 500 }; delete cleared.librarySync;
+  preferences.schedule(cleared); await preferences.flush();
+  assert.deepEqual(await new PhonePreferences(kv).read({}), cleared, 'clearing sync configuration persists');
+  assert.deepEqual(errors, []);
+});
+
+test('legacy position checkpoints preserve the sync baseline until the first version 2 checkpoint', async () => {
+  const kv = memoryPhone();
+  const state = { updatedAt: 100, positions: { book: { percent: 10 } }, askChats: { kept: ['answer'] },
+    librarySync: { desktop: { at: 80, files: { 'book.pdf': 'a'.repeat(64) } } } };
+  await new AtomicPhoneValue(kv, 'preferences').write(state);
+  await new AtomicPhoneValue(kv, 'reading-position').write({ version: 1, updatedAt: 200, state: { updatedAt: 200, positions: { book: { percent: 60 } } } });
+  const preferences = new PhonePreferences(kv); const restored = await preferences.read({});
+  assert.equal(restored.positions.book.percent, 60); assert.deepEqual(restored.librarySync, state.librarySync);
+  const next = { ...restored, updatedAt: 300, librarySync: { desktop: { ...state.librarySync.desktop, at: 300 } } };
+  preferences.schedule(next); await preferences.flush();
+  assert.deepEqual(await new PhonePreferences(kv).read({}), next);
+});
+
+test('failed sync checkpoint commits preserve the last baseline and pending changes retry together', async () => {
+  const kv = memoryPhone(), errors = [];
+  const state = { updatedAt: 100, positions: { book: { percent: 10 } }, askChats: { kept: ['answer'] }, librarySync: { desktop: { at: 100 } } };
+  await new AtomicPhoneValue(kv, 'preferences').write(state);
+  const preferences = new PhonePreferences(kv, error => errors.push(error)); await preferences.read({});
+  for (const failedKey of [`${STORAGE_PREFIX}:reading-position:a:0`, `${STORAGE_PREFIX}:reading-position`]) {
+    kv.failure = key => { if (key === failedKey) throw Object.assign(Error('Rejected'), { code: 'phone-storage-write' }); };
+    const next = { ...state, updatedAt: 200, librarySync: { desktop: { at: 200 } } };
+    preferences.schedule(next); await preferences.resume();
+    assert(preferences.suspended); assert.deepEqual(await new PhonePreferences(kv).read({}), state);
+  }
+  kv.failure = null;
+  const latest = { ...state, updatedAt: 300, positions: { book: { percent: 30 } }, librarySync: { desktop: { at: 300 } } };
+  preferences.schedule(latest); await preferences.resume();
+  assert.deepEqual(await new PhonePreferences(kv).read({}), latest);
+  assert.equal(errors.length, 2);
+});
+
+test('sync checkpoints coalesce with an overlapping full conversation save', async () => {
+  const kv = memoryPhone(); const state = { updatedAt: 100, askChats: { kept: ['old'] }, librarySync: { desktop: { at: 100 } } };
+  await new AtomicPhoneValue(kv, 'preferences').write(state);
+  const preferences = new PhonePreferences(kv); await preferences.read({});
+  const set = kv.set.bind(kv); let unblock;
+  kv.set = async (key, value) => { if (!unblock) await new Promise(resolve => { unblock = resolve; }); return set(key, value); };
+  preferences.schedule({ ...state, updatedAt: 200, librarySync: { desktop: { at: 200 } } });
+  const flush = preferences.flush(); await new Promise(resolve => setTimeout(resolve, 0));
+  const latest = { updatedAt: 400, askChats: { kept: ['new'] }, librarySync: { desktop: { at: 400 } } };
+  preferences.schedule({ ...latest, updatedAt: 300 }); preferences.schedule(latest); unblock(); await flush;
+  assert.deepEqual(await new PhonePreferences(kv).read({}), latest);
+});
+
 test('a rejected position save reclaims cache once, or stops native retries while retaining pending state', async () => {
   const kv = memoryPhone(); let recoveries = 0, errors = 0;
   const initial = { updatedAt: 100, positions: {} }; await new AtomicPhoneValue(kv, 'preferences').write(initial);

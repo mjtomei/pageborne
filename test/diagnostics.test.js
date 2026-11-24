@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { BridgeLane, Diagnostics, errorDetails, VERSION } from '../src/diagnostics.js';
 import { debugReport } from '../src/debug-export.js';
 import { installDiagnosticCheckpoint } from '../src/diagnostic-checkpoint.js';
-import { AtomicPhoneValue } from '../src/phone-storage.js';
+import { AtomicPhoneValue, bridgeStorage } from '../src/phone-storage.js';
 
 test('crash checkpoints survive a fresh browser origin and coalesce while phone storage is busy', async () => {
   const info = console.info; console.info = () => {};
@@ -124,6 +124,39 @@ test('bulk model bridge calls retain timeout/error handling without per-chunk lo
   assert.deepEqual(events, []); assert.equal(diagnostics.active, null);
   await assert.rejects(lane.run('storage-read', async () => { throw Error('storage unavailable'); }, { quiet: true }), /storage unavailable/);
   assert.equal(events[0][0], 'bridge-error'); assert.equal(lane.busy, false);
+});
+
+test('bulk preference traffic is summarized without erasing speech events or hiding storage failures', async () => {
+  const info = console.info; console.info = () => {};
+  try {
+    let persisted = 0, reject = false;
+    const diagnostics = new Diagnostics({ getItem: () => null, setItem: () => { persisted++; } });
+    diagnostics.log('voice-startup', { stage: 'first-word', ms: 120 });
+    const values = new Map(), lane = new BridgeLane(diagnostics);
+    const kv = bridgeStorage({ getLocalStorage: async key => values.get(key) || '', setLocalStorage: async (key, value) => {
+      if (reject) return false; values.set(key, value); return true;
+    } }, lane);
+    const before = persisted, value = { answer: 'private words '.repeat(55000) }, atomic = new AtomicPhoneValue(kv, 'preferences');
+    await atomic.write(value);
+    const traffic = diagnostics.summary().storageTraffic.preferences;
+    assert.equal(traffic.writes, values.size);
+    assert.equal(traffic.writtenCharacters, [...values.values()].reduce((n, value) => n + value.length, 0));
+    assert.equal(persisted - before, 2, 'only the commit head emits success events');
+    assert(diagnostics.events.some(e => e.type === 'voice-startup'));
+    assert.deepEqual(await new AtomicPhoneValue(kv, 'preferences').read(), value);
+    assert.equal(diagnostics.summary().storageTraffic.preferences.reads, values.size);
+    reject = true; await assert.rejects(atomic.write({ answer: 'new words' }), { code: 'phone-storage-write' });
+    assert.equal(diagnostics.summary().storageTraffic.preferences.errors, 1);
+    assert(diagnostics.events.some(e => e.type === 'bridge-error' && e.area === 'preferences'));
+    let release;
+    const pending = new BridgeLane(diagnostics, 10).run('storage-write', () => new Promise(resolve => { release = resolve; }),
+      { quiet: true, context: { area: 'preferences', characters: 2 } });
+    await assert.rejects(pending, { code: 'bridge-timeout' }); release(true);
+    assert.equal(diagnostics.summary().storageTraffic.preferences.timeouts, 1);
+    assert(diagnostics.events.some(e => e.type === 'bridge-timeout'));
+    assert.doesNotMatch(JSON.stringify(diagnostics.summary()), /private words|new words|even-reader:phone/);
+    assert.equal(kv.health.write, 'rejected');
+  } finally { console.info = info; }
 });
 
 test('an unfinished setup survives repeated fresh-origin reopens and an interrupted guard', () => {

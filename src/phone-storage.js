@@ -86,6 +86,10 @@ export function bridgeStorage(bridge, lane) {
   const context = (key, value) => ({ area: key.startsWith('pageborne:models:v1:') ? 'models'
     : key.startsWith(`${STORAGE_PREFIX}:pdf-cache:`) ? 'pdf-cache'
     : key.slice(STORAGE_PREFIX.length + 1).split(':')[0], ...(value === undefined ? {} : { characters: value.length }) });
+  // Chunk successes are summarized as traffic counters. Keep the atomic head
+  // operation and every failure/timeout visible without crowding out Ask/STT.
+  const quiet = key => key.startsWith('pageborne:models:v1:')
+    || key.startsWith(STORAGE_PREFIX + ':') && /:[ab]:\d+$/.test(key);
   return {
     health,
     async get(key) {
@@ -94,7 +98,7 @@ export function bridgeStorage(bridge, lane) {
         if (typeof value !== 'string') throw Object.assign(new Error('Even app storage is unavailable. Close and reopen the reader.'), { code: 'phone-storage-unavailable' });
         if (value) health.populatedReads++;
         return value;
-      }, { quiet: key.startsWith('pageborne:models:v1:'), context: context(key) });
+      }, { quiet: quiet(key), context: context(key) });
     },
     async set(key, value) {
       return lane.run('storage-write', async () => {
@@ -108,7 +112,7 @@ export function bridgeStorage(bridge, lane) {
         if (result !== true) throw Object.assign(
           new Error('Even app storage rejected the save. Its storage may be full or unavailable.'),
           { code: 'phone-storage-write', storage: context(key, value) });
-      }, { quiet: key.startsWith('pageborne:models:v1:'), context: context(key, value) });
+      }, { quiet: quiet(key), context: context(key, value) });
     },
   };
 }
@@ -453,7 +457,10 @@ export async function retryAfterStorageRecovery(work, recover) {
 }
 
 const positionFields = ['positions', 'selected', 'recent', 'openedAt', 'updatedAt'];
-const stablePreferences = value => Object.fromEntries(Object.entries(value).filter(([key]) => !positionFields.includes(key)));
+// Sync baselines/timestamps change frequently but do not change conversations.
+// Version 1 checkpoints contain positions only; version 2 also snapshots sync.
+const checkpointFields = [...positionFields, 'librarySync'];
+const stablePreferences = value => Object.fromEntries(Object.entries(value).filter(([key]) => !checkpointFields.includes(key)));
 export class PhonePreferences {
   constructor(kv, onError = () => {}, delay = 500, { recover = async () => 0 } = {}) {
     this.value = new AtomicPhoneValue(kv, 'preferences'); this.onError = onError; this.delay = delay;
@@ -464,8 +471,9 @@ export class PhonePreferences {
     let saved = await this.value.read();
     const position = await this.position.read();
     this.stable = saved && JSON.stringify(stablePreferences(saved));
-    if (saved && position?.version === 1 && Number(position.updatedAt) > Number(saved.updatedAt || 0)) {
-      saved = { ...saved }; for (const key of positionFields) delete saved[key];
+    if (saved && [1, 2].includes(position?.version) && Number(position.updatedAt) > Number(saved.updatedAt || 0)) {
+      const fields = position.version === 1 ? positionFields : checkpointFields;
+      saved = { ...saved }; for (const key of fields) delete saved[key];
       Object.assign(saved, position.state);
     }
     this.saved = saved ? JSON.stringify(saved) : null;
@@ -492,7 +500,7 @@ export class PhonePreferences {
           const text = this.pending; this.pending = null;
           const value = JSON.parse(text), stable = JSON.stringify(stablePreferences(value));
           const write = () => stable === this.stable && Number.isFinite(value.updatedAt) && value.updatedAt > 0
-            ? this.position.write({ version: 1, updatedAt: value.updatedAt, state: Object.fromEntries(positionFields.filter(key => key in value).map(key => [key, value[key]])) })
+            ? this.position.write({ version: 2, updatedAt: value.updatedAt, state: Object.fromEntries(checkpointFields.filter(key => key in value).map(key => [key, value[key]])) })
             : this.value.write(value);
           try {
             await retryAfterStorageRecovery(write, async () => {

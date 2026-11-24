@@ -28,6 +28,7 @@ jobs:
         run: |
           export CHROME_PATH="$(node --input-type=module -e 'import { chromium } from "@playwright/test"; process.stdout.write(chromium.executablePath())')"
           npm run test:library-storage
+          PREFERENCES_BROWSER=chromium node scripts/preference-writes-browser-test.mjs
           npm run test:library-recovery
           npm run test:library-on-demand
           npm run test:build-profiles
