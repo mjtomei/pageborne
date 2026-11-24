@@ -29,7 +29,7 @@ const $ = id => document.getElementById(id);
 export class AskUI {
   constructor({ pdfProcessing = () => false, goToPosition = () => {}, snapshot, pause, changed, presentVoiceOverlay = () => {}, presentTranscription = () => {}, returnToLibrary = () => {}, returnToSessions = () => {}, onLibraryFile = () => {}, readConfig, saveConfig, readModels = () => ({}), saveModels = () => {}, readBindings, saveBindings, readChats, saveChats, reveal, paperIdentity, audioControl, showSettings, captureQrImage, automaticConnection = false, readSpeech, saveSpeech, readVocabulary, saveVocabulary, readContextVocabulary, saveContextVocabulary, diagnostics }) {
     Object.assign(this, { pdfProcessing, goToPosition, snapshot, pause, changed, presentVoiceOverlay, presentTranscription, returnToLibrary, returnToSessions, onLibraryFile, readConfig, saveConfig, readModels, saveModels, readBindings, saveBindings, paperIdentity, showSettings, captureQrImage, automaticConnection, diagnostics });
-    this.glassesVisible = false; this.phoneVisible = false; this.replyUnread = false;
+    this.glassesVisible = false; this.phoneVisible = false; this.replyUnread = false; this.questionFollowing = true;
     this.chat = new AskChat(readChats, saveChats); this.reveal = reveal;
     this.deliveries = new Map();
     this.sendAttempts = new Map();
@@ -82,15 +82,19 @@ export class AskUI {
         }
         if (this.session.review?.completing) { this.reviewSpeech(text, result, true); return; }
         const newText = text !== this.session.voiceDraft;
-        this.draftConfidence = { text, words: result.words || [] }; $('ask-question').value = text;
+        this.draftConfidence = { text, words: result.words || [] }; this.updateVoiceQuestion(text);
         this.session.updateTranscription(text, result.words || []);
         if (newText) this.presentTranscription();
         if (text.length >= MAX_QUESTION_CHARS - 1000) void this.release();
       }, failure: error => { this.speech.failure(error, 'wasm'); void this.release(); } });
     this.keyboard = new AskKeyboard($('ask-panel'), $('ask-question'), () => this.session.active && this.phoneVisible, () => { this.resizeQuestion(); this.scrollChat(); this.changed(); });
     $('ask-question').maxLength = MAX_QUESTION_CHARS;
-    $('ask-question').oninput = () => { this.draftConfidence = null; if (this.session.review) { this.cancelSpeechCompletion(); this.session.reviewQuestion($('ask-question').value); } this.resizeQuestion(); };
-    $('ask-question').onscroll = () => { $('ask-question-colors').scrollTop = $('ask-question').scrollTop; };
+    $('ask-question').oninput = () => { this.questionFollowing = false; this.draftConfidence = null; if (this.session.review) { this.cancelSpeechCompletion(); this.session.reviewQuestion($('ask-question').value); } this.resizeQuestion(); };
+    $('ask-question').onscroll = () => {
+      const input = $('ask-question');
+      if (this.session.review || ['starting', 'listening', 'transcribing'].includes(this.session.status)) this.questionFollowing = input.scrollHeight - input.clientHeight - input.scrollTop < 32;
+      $('ask-question-colors').scrollTop = input.scrollTop;
+    };
     this.composerResize = new ResizeObserver(() => this.resizeQuestion()); this.composerResize.observe($('ask-question'));
     this.generation = 0;
     $('ask-open').onclick = () => { if (this.open({ showConversation: false })) this.reveal(); };
@@ -431,7 +435,7 @@ export class AskUI {
     try {
       checkConnection(this.config, this.options());
       if (this.speech.backend === 'remote') checkTranscription(this.config, this.options());
-      this.session.voiceDraft = ''; this.draftConfidence = null; $('ask-question').value = '';
+      this.session.voiceDraft = ''; this.draftConfidence = null; this.questionFollowing = true; $('ask-question').value = '';
       this.dictationVocabulary = [];
       this.dictationFilenames = [];
       if (this.speech.backend !== 'remote') this.stream.start(this.dictationVocabulary, { filenames: this.dictationFilenames });
@@ -537,8 +541,7 @@ export class AskUI {
   reviewSpeech(text, result, completing = false) {
     const newText = text !== this.session.review?.text;
     this.draftConfidence = { text, words: result?.words || [] };
-    $('ask-question').value = text; this.session.reviewQuestion(text, result?.words || []);
-    this.session.review.completing = completing; this.render(); this.changed();
+    this.updateVoiceQuestion(text); this.session.reviewQuestion(text, result?.words || [], { completing });
     if (newText) this.presentTranscription();
   }
   cancelSpeechCompletion() { this.generation++; this.transcription?.abort(); this.stream.cancel(); }
@@ -1091,15 +1094,26 @@ export class AskUI {
       queueMicrotask(() => { if (s.active && s.status === 'thinking' && !s.abort && this.binding().pending?.submitted) void this.checkReply(); });
     }
   }
+  updateVoiceQuestion(text) {
+    const input = $('ask-question'), top = input.scrollTop;
+    input.value = text;
+    this.resizeQuestion();
+    input.scrollTop = this.questionFollowing ? input.scrollHeight : top;
+    $('ask-question-colors').scrollTop = input.scrollTop;
+  }
   resizeQuestion() {
     const input = $('ask-question'); if (!input.clientWidth) return;
     const style = getComputedStyle(input), max = parseFloat(style.maxHeight) || 120;
     const key = `${input.clientWidth}:${max}:${style.fontSize}:${style.lineHeight}:${input.value}`;
     if (key === this.questionSizeKey) return;
     this.questionSizeKey = key;
+    const top = input.scrollTop;
     input.style.height = '0px'; input.style.height = `${Math.max(40, Math.min(max, input.scrollHeight))}px`;
+    const dictating = this.session.review || ['starting', 'listening', 'transcribing'].includes(this.session.status);
+    input.scrollTop = this.questionFollowing && dictating ? input.scrollHeight : top;
     $('ask-question-colors').style.width = `${input.clientWidth}px`;
     $('ask-question-colors').style.height = `${input.clientHeight}px`;
+    $('ask-question-colors').scrollTop = input.scrollTop;
   }
   scrollChat() {
     cancelAnimationFrame(this.chatScrollFrame);

@@ -64,6 +64,10 @@ test('confidence offsets survive whitespace, repeated words, wrapping and review
   assert.equal(final.uncertain.length, 1);
   assert.equal(final.text.slice(final.uncertain[0].start, final.uncertain[0].end), 'same');
   assert.deepEqual(review.pages, transcriptionReview(text).pages, 'confidence never changes pagination');
+  review.following = true;
+  const following = reviewDialog(review);
+  assert.equal(following.text, live.text, 'release keeps the rolling three-line tail');
+  assert.deepEqual(following.uncertain, live.uncertain, 'confidence offsets follow the same lines');
 });
 
 test('unknown scores stay bright, the 0.70 cutoff applies live and in review, and editing clears confidence', () => {

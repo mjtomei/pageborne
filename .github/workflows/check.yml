@@ -41,6 +41,7 @@ jobs:
           ASK_BROWSER=chromium npm run test:ask-retry
           npm run test:phone-microphone
           VOICE_BROWSER=chromium npm run test:voice-latency
+          VOICE_BROWSER=chromium npm run test:transcription-follow
           ASK_BROWSER=chromium npm run test:ask-models
           npm run test:terminal-sessions
           LIBRARIAN_BROWSER=chromium npm run test:librarian

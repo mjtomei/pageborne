@@ -76,11 +76,16 @@ export class AskSession {
     return { answer: this.answer, displayAnswer: this.displayAnswer, y: this.y,
       anchor: this.conversation?.anchor(this.y), following: this.conversation?.following, viewRevision: this.viewRevision, responseViewRevision: this.responseViewRevision };
   }
-  reviewQuestion(text, words = []) {
+  reviewQuestion(text, words = [], { completing = false } = {}) {
     if (!this.active) return;
+    // Releasing capture does not end recognition. Keep the live tail through
+    // its last update, unless the reader has deliberately scrolled back.
+    const following = this.review ? this.review.following && this.review.completing : completing && this.voiceLine === null;
     const page = this.review?.page ?? (this.voiceLine === null ? 0 : Math.floor(this.voiceLine / 3));
     this.review = transcriptionReview(text, words);
-    this.review.page = Math.min(page, Math.max(0, this.review.pages.length - 1));
+    const last = Math.max(0, this.review.pages.length - 1);
+    Object.assign(this.review, { following: !!following, completing, refining: completing,
+      page: following ? last : Math.min(page, last) });
     this.setStatus('review');
   }
   cancelReview() {
@@ -171,6 +176,7 @@ export class AskSession {
     if (!this.active) return;
     if (this.review) {
       this.review.page = Math.max(0, Math.min(this.review.page + direction, this.review.pages.length - 1));
+      this.review.following = this.review.completing && direction > 0 && this.review.page === this.review.pages.length - 1;
       this.resizeConversation(); this.onChange();
     }
     else if (this.dialog()) {

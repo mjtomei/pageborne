@@ -1,3 +1,11 @@
+## Dictation follows through release — 2026-11-23
+
+Version 0.8.175 keeps the rolling three-line transcript tail visible after release, through the final recognition result. The completing state is applied before rendering, avoiding a transient first-page review or cleared processing indicator. Manual scrollback pins the selected page; scrolling to the end while processing resumes following. The phone composer follows independently, preserves manual scrolling and keeps confidence overlays aligned. Completion leaves the final words visible and clears the processing indicator. Editing, cancellation and sending retain their existing generation guards; recognition never sends a question automatically.
+
+729 unit tests pass with one existing skip. The new real AskUI/native SDK browser regression passes Chromium and WebKit: multi-page live text, release continuity, continuing partial results, final completion, manual scrolling on either surface, returning to the end, a new recording, shortened output, editing and cancellation during processing, and no automatic submissions. Native display screenshots confirm the final three lines remain visible. Recognition and native transport are fixtures, not physical iPhone/glasses measurements. Model execution and recognition scheduling are unchanged.
+
+Existing Chromium/WebKit voice-latency, follow-up and failed-send retry regressions pass, including preloading, serialized display updates, recording collection, late replies and duplicate-send protection. The phone microphone lifecycle regression also passes. Debug/release packages, the web build, source/built audits and build-profile isolation pass. The new regression is included in CI.
+
 ## Mini acceleration and overlap batching — 2026-11-23
 
 Version 0.8.174 pins Browser STT 0.1.23. Automatic Mini acceleration preserves multi-thread CPU where available and otherwise tries WebGPU frontend/encoder execution with CPU decoding. GPU setup verifies and warms the model; failure uses a fresh CPU worker, replaying the same audio once if inference failed. Cancellation never retries. A valid saved CPU check permits normal app startup without loading the model; voice preparation still checks GPU before using it. The worker bundle fixes a document-dependent dynamic-import preloader that previously prevented GPU initialization.

@@ -4,7 +4,8 @@ import { transcriptionHint } from './controls.js';
 import { visibleUncertainWords } from './transcription-confidence.js';
 
 // Keep the controls at the bottom and grow upward only as the transcript wraps.
-// Three lines is the maximum; live text follows its tail and review is paged.
+// Three lines is the maximum; transcription follows its tail through completion
+// unless the reader chooses an earlier review page.
 export function transcriptionGeometry(dialog) {
   const lines = Math.max(1, Math.min(3, String(dialog.text || '').split('\n').length));
   const textHeight = lines * LINE_HEIGHT;
@@ -27,8 +28,10 @@ export function transcriptionReview(text, words = []) {
   return { text, pages, page: 0, words };
 }
 export function reviewDialog(review, phase = 0) {
-  return { text: review.pages[review.page] || ' ', dimmed: !!review.dimmed,
-    uncertain: visibleUncertainWords(review.text, review.words, transcriptionLines(review.text), review.page * 3),
+  const lines = transcriptionLines(review.text);
+  const start = review.following ? Math.max(0, lines.length - 3) : review.page * 3;
+  return { text: lines.slice(start, start + 3).join('\n') || ' ', dimmed: !!review.dimmed,
+    uncertain: visibleUncertainWords(review.text, review.words, lines, start),
     hint: transcriptionHint(review.pages.length),
     status: review.refining ? `Refining${'.'.repeat(phase + 1)}` : '', statusInline: true };
 }

@@ -228,6 +228,48 @@ test('live swipes scroll the transcript, pin earlier words on updates and resume
   session.move(-1); session.updateTranscription('Shorter correction'); assert.equal(session.dialog().text, 'Shorter correction');
 });
 
+test('release follows the live tail through the final recognition result without jumping to page one', () => {
+  const session = new AskSession(); session.open({}); session.setStatus('listening');
+  const text = Array.from({ length: 100 }, (_, i) => `word${i}`).join(' ');
+  session.updateTranscription(text); const live = session.dialog().text;
+  session.reviewQuestion(text, [], { completing: true });
+  assert.equal(session.dialog().text, live, 'release preserves all three visible lines');
+  assert.match(session.dialog().status, /^Refining/);
+  for (const suffix of [' next', ' more words '.repeat(12) + 'NEWEST']) {
+    session.reviewQuestion(text + suffix, [], { completing: true });
+    assert(session.dialog().text.endsWith(suffix.trim().split(' ').at(-1)));
+  }
+  session.reviewQuestion(text + ' FINAL', [], { completing: false });
+  assert.match(session.dialog().text, /FINAL$/); assert.equal(session.dialog().status, '');
+  session.move(-1); assert.doesNotMatch(session.dialog().text, /FINAL$/);
+  session.cancelReview(); session.setStatus('starting'); session.setStatus('listening');
+  session.reviewQuestion('New recording', [], { completing: true });
+  assert.equal(session.review.following, true);
+  session.reviewQuestion('Short final', [], { completing: false });
+  assert.equal(session.dialog().text, 'Short final');
+});
+
+test('manual scrollback survives post-release results and returning to the end resumes following', () => {
+  const text = Array.from({ length: 150 }, (_, i) => `word${i}`).join(' ');
+  for (const scrollBeforeRelease of [false, true]) {
+    const session = new AskSession(); session.open({}); session.setStatus('listening'); session.updateTranscription(text);
+    if (scrollBeforeRelease) session.move(-1);
+    session.reviewQuestion(text, [], { completing: true });
+    if (!scrollBeforeRelease) session.move(-1);
+    const earlier = session.dialog().text;
+    session.reviewQuestion(text + ' New words arrive after release.', [], { completing: true });
+    assert.equal(session.dialog().text, earlier);
+    session.reviewQuestion(text + ' Final words arrive after release.', [], { completing: false });
+    assert.equal(session.dialog().text, earlier); assert.equal(session.dialog().status, '');
+  }
+  const session = new AskSession(); session.open({}); session.setStatus('listening'); session.updateTranscription(text);
+  session.reviewQuestion(text, [], { completing: true }); session.move(-1); session.move(1);
+  session.reviewQuestion(text + ' RESUMED', [], { completing: true });
+  assert.match(session.dialog().text, /RESUMED$/);
+  session.reviewQuestion('Shortened result', [], { completing: false });
+  assert.equal(session.dialog().text, 'Shortened result'); assert.equal(session.review.page, 0);
+});
+
 test('closing during live dictation removes the overlay and releases input handling', () => {
   const session = new AskSession(); session.open({ passage: 'Paper' });
   session.setStatus('listening'); session.voiceDraft = 'A provisional question';

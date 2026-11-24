@@ -52,6 +52,8 @@ Ask connects to a desktop session you configure; direct API connections are expe
 
 After you send a follow-up, returning to Ask starts at the unread portion of that reply. Unfinished older answers remain available by scrolling back, and their reading records stay unchanged. Replies arriving from another device remain in unread order. The phone chat follows new replies when at the bottom and preserves manual scrollback when hidden, including when earlier history is added.
 
+Dictation keeps the newest words visible on the glasses and phone after you release the button, through the final transcription update. The processing indicator clears when recognition finishes, leaving the final words in view. Scrolling back preserves your reading position; returning to the end while processing resumes following. Release still opens review without sending the question.
+
 When a send fails, the glasses show **Hold to retry**. Holding reuses the failed question, its original passage and its chat entry; repeated holds cannot start another retry or a recording. If the desktop may already have received it, retry checks that submission without resending. Speaking returns after recovery, a new message, or clearing the blocked submission. Retry stays with its document/model/session, and a rejected question can be retried after leaving and reopening Ask in the same app run.
 
 If a question’s delivery could not be confirmed, Ask offers **Clear blocked submission**. This stops waiting without resending, keeps the question and conversation, and allows a late reply to sync. Known native Claude disconnection rejections are reported as unsent so you can retry after reconnecting. Other ambiguous failures keep the duplicate-send guard until you explicitly clear it.
