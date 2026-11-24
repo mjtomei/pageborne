@@ -32,6 +32,7 @@ jobs:
           npm run test:library-recovery
           npm run test:library-on-demand
           npm run test:build-profiles
+          node scripts/pdf-startup-browser-test.mjs
           node scripts/desktop-ocr-browser-test.mjs
           PAGE_TIME_BROWSER=chromium npm run test:page-time
           npm run test:display-recovery

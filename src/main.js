@@ -2081,7 +2081,12 @@ async function openLibrary() {
     if (!store.readOnly) await pdfPreparationCache.retain(snapshot.documents.map(doc => doc.id)).catch(error => diagnostics.error('pdf-cache-cleanup-error', error));
     libraryReady = true; $('import').disabled = false; notice('');
     if (WEB) await sharedReader.sync(); else void sharedReader.sync();
-    const selected = snapshot.documents.some(doc => doc.id === preferences.selected?.id) ? preferences.selected.id : null;
+    const previous = snapshot.documents.find(doc => doc.id === preferences.selected?.id);
+    // A native WebView can be killed while decoding a PDF, without a JS error
+    // or a chance to save a crash marker. Keep Sync and document selection
+    // reachable on the next launch; opening the PDF explicitly still restores
+    // its saved position and bookmarks.
+    const selected = phonePreferences && previous?.format === 'pdf' ? null : previous?.id || null;
     selectDocument(selected, false);
     setLibraryOpen(!active, false);
     void refreshReadingCounts();
