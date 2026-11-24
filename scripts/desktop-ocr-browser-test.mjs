@@ -140,6 +140,41 @@ try {
   assert.deepEqual(replayedFallback.saved.layout.blocks, fallbackArtifact.saved.layout.blocks,
     'rebuilding from checkpoints preserves the whole-page fallback');
   assert.equal(fallbackCalls.length, 3, 'checkpoint rebuild never retries truncated recognition');
+  // Nano must be created inside PdfDocument.prepare(), which otherwise resets
+  // OCR. Exercise the real raster callback and checkpoint path with a fixture.
+  const nanoModel = path.join(root, 'ocria-nano'); await mkdir(nanoModel);
+  const names = ['LICENSE', 'manifest.json', 'det.onnx', 'rec_latin.onnx', 'router.onnx'];
+  for (const name of names) await writeFile(path.join(nanoModel, name), name);
+  const modelFiles = names.map(file => ({ file, sha256: hash(file) }));
+  await writeFile(config, JSON.stringify({ ...configValue, recognizer: 'ocria-nano', modelPath: nanoModel,
+    modelFiles, weightsSha256: hash(JSON.stringify(modelFiles)), reusePreparedFrom: [state.engine] }));
+  const nanoPixels = Buffer.from(pixels); nanoPixels[0] = 250;
+  await writeFile(path.join(libraryDir, 'nano.pdf'), scannedPdfFixture(600, 800, nanoPixels, { pages: 1 }));
+  const nanoCalls = [];
+  await runDaemon(config, { once: true, readMemory, dist, engineFactory: () => ({
+    async infer(items) {
+      return { items: items.map(item => {
+        assert.equal(item.extracted, undefined, 'Nano receives the raster before any Tesseract recognition');
+        assert(item.width > 0 && item.height > 0 && item.image.endsWith('.png'));
+        nanoCalls.push(item.number);
+        return { number: item.number, markdown: '', extracted: { text: [0, 22, 44].flatMap(y => [100, 300, 500, 700].map(x =>
+          ({ x, y: y+120, width: 80, height: 20, text: 'a label', confidence: 98, nanoConfidence: .98 }))) } };
+      }) };
+    }, async stop() {},
+  }) });
+  assert.deepEqual(nanoCalls, [1], 'existing completed documents are retained without model calls');
+  const nanoState = JSON.parse(await readFile(path.join(ocr, 'daemon.json')));
+  const migrated = JSON.parse(await readFile(path.join(ocr, nanoState.engine, 'prepared', hash(artifact.key)+'.json')));
+  assert.equal(migrated.reusedFromEngine, state.engine);
+  assert.deepEqual(migrated.saved.layout.blocks, artifact.saved.layout.blocks);
+  const nanoManifest = await libraryManifest({}, { libraryDir });
+  const nanoDoc = nanoManifest.files.find(d => d.name === 'nano.pdf');
+  const nanoCheckpoint = JSON.parse(await readFile(path.join(ocr, nanoState.engine, 'pages', nanoDoc.sha256, '1.json')));
+  assert.equal(nanoCheckpoint.recognition.model, 'OCRia-nano-1');
+  assert.equal(nanoCheckpoint.fallback.code, 'ocr-diagram-grid');
+  const nanoKey = JSON.stringify([state.preparationVersion, state.pdfjs, nanoDoc.sha256, JSON.parse(artifact.key)[3]]);
+  const nanoArtifact = JSON.parse(await readFile(path.join(ocr, nanoState.engine, 'prepared', hash(nanoKey)+'.json')));
+  assert(nanoArtifact.saved.layout.blocks.some(b => b.fullPage));
   await writeFile(path.join(out, 'result.json'), JSON.stringify({ passed: true, inference: 'fixture; no GPU',
     calls, fallbackCalls, pages: 3, sourceUnchanged: true, checkpointResume: true,
     wholePageFallback: true, laterDocumentsComplete: true, phoneCacheRoundTrip: true }, null, 2));

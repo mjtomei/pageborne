@@ -109,10 +109,9 @@ export class SpeechSetup {
       if (!Object.values(this.models.entries).every(entry => entry.verified)) throw Error('The voice check must pass before continuing.');
       this.render();
       if (this.dialog.open) await new Promise(resolve => setTimeout(resolve, 350));
-      // Reading does not need resident speech heaps. Load them on speaking;
-      // the saved checks remain valid and weights remain on the phone.
+      // Keep a freshly checked model warm. PDF preparation explicitly releases
+      // it for working memory; saved receipts never imply a resident model.
       this.suspended = false;
-      this.models.close();
       this.blocked = false; cancelTimeout(this.timer); this.dialog.close(); this.resolve(); this.pending = null;
     } catch (error) {
       this.storageUnavailable = error.code === 'phone-storage-unavailable';
@@ -164,7 +163,7 @@ export class SpeechSetup {
     const ready = entries.every(entry => entry.verified);
     this.dialog.querySelector('h2').textContent = this.error ? 'Voice setup needs attention' : 'Preparing voice';
     this.dialog.querySelector('#speech-setup-help').textContent = modelDownloadSummary(this.models.store, ready)
-      + ' Successful checks are saved on this device. Checks repeat if the models, device or speech runtime change; models load when you speak.';
+      + ' Successful checks are saved on this device. Checks repeat if the models, device or speech runtime change. Voice preloads after document preparation.';
     const status = this.dialog.querySelector('[role=status]');
     const text = this.recoveryStatus || (this.storageUnavailable ? this.error + ' You can continue reading from your desktop without voice.' : '') || (this.storageFailure && this.error
       ? 'Even could not save voice setup data. This does not mean your phone is full. You can continue reading without voice, or retry setup.'

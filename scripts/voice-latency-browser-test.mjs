@@ -107,6 +107,26 @@ try {
         } finally { speech.models = models; }
       });
       assert(report.readingCancelsDownload, 'opening a document must not wait for an unfinished model download');
+      report.readingPreload = await page.evaluate(async () => {
+        const speech = __askUI.speech, entry = speech.models.entries['fluid-mini'];
+        const prior = entry.verified, read = speech.read, start = __warmCalls;
+        entry.verified = true;
+        try {
+          speech.schedulePreload(() => false);
+          await new Promise(r => setTimeout(r, 1600));
+          if (__warmCalls !== start) throw Error('Preload ignored document preparation');
+          speech.schedulePreload(); speech.cancelPreload();
+          await new Promise(r => setTimeout(r, 1600));
+          if (__warmCalls !== start) throw Error('Cancelled preload ran');
+          speech.schedulePreload();
+          await new Promise(r => setTimeout(r, 1600));
+          if (__warmCalls !== start + 1) throw Error('Reader did not preload');
+          speech.read = () => 'remote'; speech.schedulePreload();
+          await new Promise(r => setTimeout(r, 1600));
+          return __warmCalls === start + 1;
+        } finally { entry.verified = prior; speech.read = read; speech.cancelPreload(); }
+      });
+      assert(report.readingPreload);
       report.immediateQueue = await page.evaluate(async () => {
         const ask = window.__askUI; ask.open(); ask.session.setStatus('listening');
         window.__displayDelay = 80;

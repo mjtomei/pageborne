@@ -25,8 +25,8 @@ async function server() {
 }
 try {
   const origins = [await server(), await server()];
-  for (const engine of [chromium, webkit]) {
-    const browser = await engine.launch({ headless: true, executablePath: engine === chromium ? '/usr/bin/google-chrome' : process.env.WEBKIT_PATH,
+  for (const engine of process.env.VOICE_BROWSER === 'chromium' ? [chromium] : [chromium, webkit]) {
+    const browser = await engine.launch({ headless: true, executablePath: engine === chromium ? process.env.CHROME_PATH || '/usr/bin/google-chrome' : process.env.WEBKIT_PATH,
       ...(engine === chromium ? { args: ['--disable-gpu'] } : {}) });
     const storage = new Map(), report = { engine: engine.name(), passed: false, downloads: 0, errors: [] }; reports.push(report);
     const kv = { get: async key => storage.get(key) || '', set: async (key, value) => storage.set(key, value) };
@@ -89,7 +89,7 @@ try {
                 window.__prepared.push(data.model.id);
                 if (data.reuseVerification && window.__delayPreparation) await new Promise(resolve => setTimeout(resolve, window.__delayPreparation));
                 if (data.model.id === 'fluid-mini' && !data.reuseVerification) await new Promise((resolve, reject) => { window.__finishModel = fail => { window.__finishModel = null; fail ? reject(Error('Injected setup failure')) : resolve(); }; });
-                this.emit({ id: data.id, result: { backend: 'wasm', verified: true } });
+                this.emit({ id: data.id, result: { backend: 'wasm', threads: 1, verified: true } });
               } catch (error) { this.emit({ id: data.id, error: error.message }); }
             }
             terminate() {}
@@ -137,10 +137,15 @@ try {
         const info = await page.evaluate(() => ({ kind: __askUI.speech.models.store.storageKind, ...__askUI.speech.models.store.stats }));
         assert.equal(info.kind, 'phone'); if (run) { assert.equal(info.networkRequests, 0); assert.equal(info.downloadedBytes, 0); assert.equal(info.receivedBytes, 0); }
         if (run === 1 || run === 2) {
-          assert.equal(await page.evaluate(() => __prepared.length), 0, 'Restart/update creates no speech workers');
+          await expect.poll(() => page.evaluate(() => __prepared.length), { timeout: 10000 }).toBe(1);
+          await expect.poll(() => page.evaluate(() => __askUI.speech.preload?.state)).toBe('ready');
+          assert.equal(await page.evaluate(() => __checked.length), 0, 'Background preload uses the saved check');
+          await expect(page.locator('#speech-runtime')).toContainText('1 CPU thread');
+          const runtime = await page.evaluate(() => __askUI.diagnostics.speech.runtime['fluid-mini']);
+          assert.equal(runtime.cpuThreads, 1); assert.equal(runtime.gpu, false); assert.equal(runtime.resident, true);
+          assert.equal(await page.evaluate(() => __transcribed.length), 0, 'Preload does not record or transcribe user audio');
           await page.evaluate(() => __askUI.speech.open());
-          await expect.poll(() => page.evaluate(() => __prepared.length)).toBe(1);
-          assert.equal(await page.evaluate(() => __checked.length), 0, 'First voice loads without retesting');
+          assert.equal(await page.evaluate(() => __prepared.length), 1, 'First question reuses the resident worker');
           if (run === 2) {
             await page.locator('#library-librarian').click();
             await page.evaluate(async () => {
@@ -160,7 +165,9 @@ try {
             const transcribed = await page.evaluate(() => __transcribed);
             assert.equal(transcribed.length, 1);
             assert(transcribed.every(call => call.audioMs === 750 && call.vocabulary.includes('Fafnir')));
+            await page.waitForFunction(() => __askUI.session.status === 'listening');
             await page.evaluate(() => __askUI.release());
+            await page.screenshot({ path: `${out}/${engine.name()}-review.png` });
             await expect(page.locator('#ask-review-cancel')).toBeVisible();
             await expect(page.locator('#ask-question')).toHaveValue('Ask Fafnir now.');
             const timings = await page.evaluate(() => __askUI.diagnostics.events.filter(e => e.type === 'voice-startup'));

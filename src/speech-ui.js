@@ -6,6 +6,8 @@ import { vocabularyWords } from './speech-vocabulary.js';
 import { speechVocabulary, speechFilenames } from './speech-vocabulary-ranking.js';
 import { SpeechSetup, modelFileStatus, modelDownloadSummary } from './speech-setup.js';
 import { helpPopup } from './help-popups.js';
+import { speechRuntime, speechRuntimeLabel } from './speech-runtime.js';
+import { safeTimeout, cancelTimeout } from './timers.js';
 
 const $ = id => document.getElementById(id);
 export class SpeechUI {
@@ -26,11 +28,43 @@ export class SpeechUI {
   }
   get backend() { return speechBackend(this.read()); }
   open({ retry = false } = {}) {
+    this.cancelPreload();
     if (this.setup.suspended) return;
     this.idleGeneration = (this.idleGeneration || 0) + 1;
     this.opened = true;
-    if (this.backend !== 'remote' && !this.setup.blocked) void this.models.open({ retry });
+    if (this.backend !== 'remote' && !this.setup.blocked) return this.models.open({ retry });
   }
+  schedulePreload(canStart = () => true) {
+    this.cancelPreload();
+    // Startup already checked/downloaded these files. Never start a new large
+    // download or automatically retry a failed preparation in the background.
+    const allowed = () => canStart() && !document.hidden && this.backend !== 'remote'
+      && !this.setup.blocked && !this.setup.suspended
+      && Object.values(this.models.entries).every(e => e.verified && e.state !== 'error');
+    if (!allowed() || Object.values(this.models.entries).every(e => e.state === 'ready')) return;
+    this.preload = { state: 'scheduled' }; this.renderModels();
+    this.preloadTimer = safeTimeout(async () => {
+      this.preloadTimer = null;
+      if (!allowed()) { this.preload = { state: 'deferred' }; this.renderModels(); return; }
+      const generation = this.preloadGeneration = (this.preloadGeneration || 0) + 1;
+      const started = performance.now();
+      this.preload = { state: 'loading', startedAt: new Date().toISOString() };
+      this.diagnostics?.log('speech-preload', this.preload); this.renderModels();
+      try {
+        // open() and a simultaneous hold share EnsembleSpeech's preparation.
+        await this.open();
+        if (generation !== this.preloadGeneration) return;
+        this.preload = { ...this.preload, state: Object.values(this.models.entries).every(e => e.state === 'ready') ? 'ready' : 'failed',
+          loadMs: Math.round(performance.now() - started) };
+        this.diagnostics?.log('speech-preload', this.preload); this.renderModels();
+      } catch (error) {
+        if (generation !== this.preloadGeneration) return;
+        this.preload = { state: 'failed', loadMs: Math.round(performance.now() - started) };
+        this.failure(error); this.renderModels();
+      }
+    }, 1500);
+  }
+  cancelPreload() { cancelTimeout(this.preloadTimer); this.preloadTimer = null; }
   retrySetup() { return this.setup.begin(this.setup.initialize, { retry: true }); }
   async recoverDownloads() {
     const cache = await this.models.store.cache();
@@ -57,6 +91,8 @@ export class SpeechUI {
   }
   setStorage(kv) { this.storage.configure(kv); }
   async releaseForReading() {
+    this.cancelPreload(); this.preloadGeneration = (this.preloadGeneration || 0) + 1;
+    this.preload = { state: 'released-for-document' };
     const generation = this.idleGeneration = (this.idleGeneration || 0) + 1;
     // A preload can still be fetching uncached weights. No inference worker or
     // preparation marker exists yet, so abort downloads instead of making the
@@ -102,6 +138,7 @@ export class SpeechUI {
     $('speech-vocabulary-last-terms').placeholder = 'No vocabulary hints.';
   }
   load() {
+    if (this.backend === 'remote') this.dispose();
     $('speech-backend').value = this.backend;
     $('speech-vocabulary').value = this.readVocabulary();
     $('speech-context-vocabulary').checked = this.readContextVocabulary() !== false;
@@ -114,6 +151,8 @@ export class SpeechUI {
     const entries = Object.values(this.models.entries);
     if (this.diagnostics?.enabled) {
       const snapshot = { backend: this.backend === 'remote' ? 'remote' : entries.find(e => e.ready)?.ready.backend || this.backend, ensemble: entries.length > 1,
+        preload: this.preload || { state: 'not-started' },
+        runtime: Object.fromEntries(entries.map(e => [e.model.id, speechRuntime(e)])),
         storage: { kind: this.models.store.storageKind, ...this.models.store.stats,
           files: [...this.models.store.files.values()].map(({ url, ...file }) => ({ ...file })) },
         models: Object.fromEntries(entries.map(e => [e.model.id, { state: e.state, progress: e.progress.slice(0, 200), downloadBytes: e.downloadBytes, totalBytes: e.totalBytes, setup: { ...e.setup }, verified: e.verified, verification: e.ready?.verification, wasmBytes: e.ready?.wasmBytes, backend: e.ready?.backend, threads: e.ready?.threads, adapter: e.ready?.adapter, accelerationFallback: e.ready?.accelerationFallback, accelerationFailure: e.ready?.accelerationFailure }])) };
@@ -130,12 +169,15 @@ export class SpeechUI {
       ? 'Voice is paused after setup failed. Reading and typed Ask remain available. Choose Retry voice to prepare speech again.'
       : entries.map(describe).join(' · ') + '. ' + modelDownloadSummary(this.models.store, entries.every(e => e.verified));
     this.status(text);
+    const runtime = $('speech-runtime');
+    if (runtime) runtime.textContent = this.backend === 'remote' ? 'Transcription runs on the configured server.'
+      : entries.map(e => speechRuntimeLabel(speechRuntime(e))).join(' ') + (this.preload?.state === 'loading' ? ' Preloading for your next question…' : '');
     $('speech-retry').hidden = this.backend === 'remote' || !this.setup.suspended && !entries.some(e => e.state === 'error' || e.state === 'idle' && !e.verified);
     $('speech-retry').textContent = this.setup.suspended || entries.some(e => e.state === 'error') ? 'Retry voice' : 'Prepare voice';
     $('ask-voice-models').textContent = text;
   }
   status(text) { $('speech-status').textContent = text; }
-  dispose() { this.models.close(); }
+  dispose() { this.cancelPreload(); this.preloadGeneration = (this.preloadGeneration || 0) + 1; this.models.close(); }
   result(result) {
     const { text, words, confidence, ...metrics } = result;
     // Audio and recognized text never enter diagnostic exports.

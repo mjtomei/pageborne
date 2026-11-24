@@ -1,7 +1,7 @@
 # Desktop library OCR
 
-This optional Linux/NVIDIA daemon prepares scanned library PDFs with
-[Xiaomi-OCR-0](https://huggingface.co/xiaomi-research/Xiaomi-OCR-0). The phone
+This optional Linux daemon prepares scanned library PDFs with
+[OCRia-nano-1 by LlamaIndex](https://huggingface.co/llamaindex/OCRia-nano-1) on the CPU. The phone
 keeps its existing OCR implementation and can read without the daemon. A
 completed desktop preparation is downloaded when the matching PDF is opened,
 then cached on the phone for offline reading. Reopen a document to pick up a
@@ -9,7 +9,51 @@ new preparation; a background result never changes the layout while reading.
 
 The daemon uses the same PDF layout, running-header removal, reflow, annotation
 gallery and whole-image handling as the glasses reader. Digital PDFs with usable
-text keep their embedded text. For scans, Tesseract provides word geometry and
+text keep their embedded text. Nano supplies measured line boxes, without
+inventing word positions or adopting Nano's table/paragraph classifications.
+Repeated grids of short labels conservatively retain the original page as an
+image, preserving diagram relationships. Recognition failures use the existing
+Tesseract path. Phone OCR remains Tesseract; this change installs no phone model.
+
+## Nano setup (recommended)
+
+Install Node 22.13+, Python and the repository's npm dependencies. Then run:
+
+```sh
+npm run build:ocr
+npx playwright install chromium
+python3 -m venv .state/nano-venv
+.state/nano-venv/bin/pip install -r desktop/ocr/requirements-nano.txt
+LITEPARSE_MODEL_DIR="$PWD/.state/nano-models" .state/nano-venv/bin/lit models pull ocria-nano
+node desktop/ocr/configure-nano.mjs .state/nano-models/ocria-nano .state/nano-venv/bin/python /absolute/library > .state/desktop-ocr.json
+```
+
+The model installer verifies the upstream package; the configuration tool pins
+all installed asset hashes, including the platform runtime. Startup verifies
+these hashes before loading inference. Runtime document processing is local and
+does not download model weights. Optionally set `chromePath` in the private config.
+Use the service example below with this configuration. Nano uses one parser
+worker; it does not initialize PyTorch/CUDA. Keep the service memory and swap
+limits and the memory watchdogs. Start manually and check logs before enabling
+automatic startup.
+
+LiteParse is Apache-2.0. **Nano's weights and accompanying files use a separate
+[modified Open RAIL-M license](https://huggingface.co/llamaindex/OCRia-nano-1/blob/main/LICENSE)**,
+including revenue/funding and competing-service restrictions. Retain the model
+license and attribution. Models are not bundled in this repository or phone
+packages. The adapter is Pageborne code; weights are unmodified.
+
+Existing validated layouts can be explicitly retained by setting
+`reusePreparedFrom` to an array of up to four previous engine hashes. Each copy
+must match the exact document hash/settings/preparation key and validate as a
+complete layout. It records `reusedFromEngine`, preserves the old artifact, and
+does **not** reuse old recognition for new work. Omit this option for a fresh OCR
+run of every document. Existing configurations without `recognizer` retain the
+legacy pipeline for compatibility; new Nano configs use `recognizer: "ocria-nano"`.
+
+## Legacy Xiaomi pipeline
+
+For `recognizer: "tesseract-xiaomi"`, Tesseract provides word geometry and
 Xiaomi provides a second transcription, using its upstream prompt. A conservative
 alignment pass transfers supported word and capitalization corrections onto that
 geometry. Agreement also contributes to the layout acceptance score, while the
@@ -25,7 +69,7 @@ the desktop browser test exercises both replay and this failure path. Old
 recognition must be explicitly selected and checked against the source PDF and
 model configuration when migrating between cache namespaces.
 
-## Setup
+### Legacy setup
 
 Use a Linux desktop with a supported NVIDIA GPU, Node 22.13+, Python, and a
 CUDA-compatible PyTorch installation. These instructions are for the optional
@@ -87,7 +131,7 @@ or less than 12 GiB physically free, leaving headroom below the 80% ceiling.
 Linux `MemAvailable` is used for the utilization measure; the physical-free check
 is additional headroom for unified-memory GPUs. The service uses no swap.
 
-Batch size is limited to 1–4, defaulting to 1. The PyTorch allocator defaults to
+Batch size is limited to 1–4, defaulting to 1. For the legacy GPU engine, the PyTorch allocator defaults to
 4 GiB and cannot be configured above 6 GiB. On the tested GB10, batch 4 improved
 throughput over 1, but batch 8 regressed and was running during two system freezes.
 Larger batches are therefore disabled. These limits reduce risk; neither cgroups

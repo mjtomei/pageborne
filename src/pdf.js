@@ -41,9 +41,10 @@ function textBoxes(content, viewport) {
   });
 }
 export class PdfDocument {
-  constructor({ diagnostics, selection, preparationCache } = {}) {
+  constructor({ diagnostics, selection, preparationCache, createOcr = () => new PdfOcr() } = {}) {
     this.diagnostics = diagnostics; this.selection = selection;
     this.preparationCache = preparationCache;
+    this.createOcr = createOcr;
     this.cache = new Map(); this.pending = new Map(); this.marginMasks = new Map(); this.pageScales = new Map(); this.pageTurns = new Map(); this.destroyed = false;
     this.renders = new Set(); this.work = new PdfWork();
   }
@@ -90,7 +91,7 @@ export class PdfDocument {
     this.checkpoint('initializing', { pdfjsVersion, encodedBytes: content.length, mode, keepMarginNotes, keepRepeatedText, normalizeColors, reflow, textSize });
     await this.yieldPreparation();
     this.normalizeColors = normalizeColors;
-    this.warnings = []; this.ocr = new PdfOcr();
+    this.warnings = []; this.ocr = this.createOcr();
     textSize = [20, 24, 28].includes(Number(textSize)) ? Number(textSize) : 20;
     this.checkpoint('decoding-file');
     const data = base64ToBytes(content);

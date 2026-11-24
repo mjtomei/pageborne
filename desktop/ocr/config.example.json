@@ -1,4 +1,5 @@
 {
+  "recognizer": "tesseract-xiaomi",
   "libraryDir": "/absolute/path/to/library",
   "python": "/absolute/path/to/ocr-venv/bin/python",
   "modelPath": "/absolute/path/to/Xiaomi-OCR-0",

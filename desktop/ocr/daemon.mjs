@@ -11,7 +11,8 @@ import { libraryManifest, librarySnapshotBytes, libraryOriginal, libraryOcrDirec
 import { PDF_DEFAULTS } from '../../src/pdf-settings.js';
 import { attachCheckpointNavigation } from './navigation.mjs';
 import { attachCheckpointReflowSanity } from './reflow-audit.mjs';
-import { ocrEngineIdentity } from './identity.mjs';
+import { ocrEngineIdentity, verifyOcrModels } from './identity.mjs';
+import { validatePdfPreparation } from '../../src/pdf-cache.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -73,7 +74,7 @@ export class Engine {
     this.ready = new Promise((resolve, reject) => this.pending.push({ resolve, reject }));
     const child = this.child = this.spawnProcess(this.config.python, [path.join(here, 'guard.py'),
       '--samples', path.join(this.config.telemetryDir, `memory-${Date.now()}.jsonl`), '--', this.config.python,
-      path.join(here, 'engine.py'), this.configFile], { stdio: ['pipe', 'pipe', 'inherit'] });
+      path.join(here, this.config.recognizer === 'ocria-nano' ? 'nano.py' : 'engine.py'), this.configFile], { stdio: ['pipe', 'pipe', 'inherit'] });
     const failure = error => {
       if (this.child !== child || this.stoppingChild === child || this.failed) return;
       this.failed = error;
@@ -138,10 +139,9 @@ export async function runDaemon(configFile, { once = false, engineFactory = (con
   for (const name of logs.slice(16)) await unlink(path.join(config.telemetryDir, name));
   // Verify actual weights once; changing weights/runtime/preparation code gets
   // a different artifact namespace, never silently reuses old recognition.
-  const weights = createHash('sha256');
-  const file = await open(path.join(config.modelPath, 'model.safetensors'), 'r');
-  try { for await (const chunk of file.createReadStream()) weights.update(chunk); } finally { await file.close().catch(() => {}); }
-  if (weights.digest('hex') !== config.weightsSha256) throw new Error('Xiaomi checkpoint checksum mismatch');
+  await verifyOcrModels(config);
+  if (config.reusePreparedFrom && (!Array.isArray(config.reusePreparedFrom) || config.reusePreparedFrom.length > 4
+    || config.reusePreparedFrom.some(id => !/^[a-f0-9]{64}$/.test(id)))) throw Error('Invalid preparation migration source');
   const engineId = await ocrEngineIdentity(config, dist);
   const folder = await directory(path.join(root, engineId));
   const prepared = await directory(path.join(folder, 'prepared'));
@@ -154,7 +154,7 @@ export async function runDaemon(configFile, { once = false, engineFactory = (con
   await new Promise(resolve => server.once('listening', resolve));
   let browser, tab, state, heartbeat, monitor, stopping = false, pressureStop = false;
   async function saveState(update = {}) {
-    state = { ...state, engine: engineId, heartbeat: Date.now(), batchSize, ...update };
+    state = { ...state, engine: engineId, recognizer: config.recognizer || 'tesseract-xiaomi', heartbeat: Date.now(), batchSize, ...update };
     await atomic(path.join(root, 'daemon.json'), state);
   }
   async function stop() { stopping = true; await Promise.allSettled([engine.stop(), browser?.close()]); }
@@ -203,9 +203,22 @@ export async function runDaemon(configFile, { once = false, engineFactory = (con
       for (const job of jobs) {
         if (stopping) break;
         const id = digest(job.key), outputFile = path.join(prepared, id+'.json');
-        const existing = await json(outputFile, Infinity);
+        let existing = await json(outputFile, Infinity);
+        // An explicitly configured migration preserves already checked layouts
+        // and their provenance. Never reuse recognition checkpoints for new work.
+        for (const previousEngine of !existing ? config.reusePreparedFrom || [] : []) {
+          const previous = await json(path.join(root, previousEngine, 'prepared', id + '.json'), Infinity);
+          if (!previous || previous.key !== job.key || previous.engine !== previousEngine
+            || previous.reusedFromEngine && !/^[a-f0-9]{64}$/.test(previous.reusedFromEngine)) continue;
+          validatePdfPreparation(previous.saved);
+          await libraryOriginal({ name: job.name, sha256: job.doc.sha256, id: manifest.id, snapshot: true }, options);
+          existing = { ...previous, engine: engineId, reusedFromEngine: previous.reusedFromEngine || previousEngine };
+          await atomic(outputFile, existing, Infinity); break;
+        }
         if (existing) {
-          const readPage = number => json(path.join(pages, job.doc.sha256, number+'.json'));
+          if (existing.reusedFromEngine && !/^[a-f0-9]{64}$/.test(existing.reusedFromEngine)) throw Error('Invalid preparation provenance');
+          const checkpointRoot = existing.reusedFromEngine ? path.join(root, existing.reusedFromEngine, 'pages') : pages;
+          const readPage = number => json(path.join(checkpointRoot, job.doc.sha256, number+'.json'));
           const navigationChanged = await attachCheckpointNavigation(existing.saved, readPage, () => !stopping);
           const sanityChanged = !stopping && await attachCheckpointReflowSanity(existing.saved, readPage,
             { current: () => !stopping, reflow: preparationRequest(job.key).settings.reflow });
@@ -222,6 +235,16 @@ export async function runDaemon(configFile, { once = false, engineFactory = (con
         const original = { name: job.name, sha256: job.doc.sha256, id: manifest.id, snapshot: true };
         try {
           const bytes = await librarySnapshotBytes(original, options);
+          if (config.recognizer === 'ocria-nano') await tab.exposeFunction('desktopNanoRecognize', async item => {
+            await libraryOriginal(original, options);
+            const image = path.join(temporary, randomUUID()+'.png');
+            try {
+              await writeFile(image, Buffer.from(item.png, 'base64'), { flag: 'wx', mode: 0o600 });
+              const result = (await engine.infer([{ number: item.number, width: item.width, height: item.height, image }])).items[0];
+              await libraryOriginal(original, options);
+              return result;
+            } finally { await unlink(image).catch(() => {}); }
+          });
           await tab.exposeFunction('desktopProgress', progress => saveState(progress));
           await tab.exposeFunction('desktopPageRead', async number => {
             const checkpoint = path.join(pageFolder, number+'.json');
@@ -242,7 +265,8 @@ export async function runDaemon(configFile, { once = false, engineFactory = (con
               }
               const inferred = staged.length ? (await engine.infer(staged)).items : [];
               const results = items.map(item => inferred.find(p => p.number === item.number)
-                || { number: item.number, turn: item.turn, extracted: item.extracted });
+                || { number: item.number, turn: item.turn, extracted: item.extracted,
+                  ...(item.recognition ? { recognition: item.recognition } : {}), ...(item.fallback ? { fallback: item.fallback } : {}) });
               await libraryOriginal(original, options);
               for (const result of results) {
                 await atomic(path.join(pageFolder, result.number+'.json'), result);
@@ -253,7 +277,7 @@ export async function runDaemon(configFile, { once = false, engineFactory = (con
             } finally { for (const item of staged) await unlink(item.image).catch(() => {}); }
           });
           const result = await tab.evaluate(arg => window.prepareDesktopPdf(arg), {
-            content: bytes.toString('base64'), settings: preparationRequest(job.key).settings, batchSize,
+            content: bytes.toString('base64'), settings: preparationRequest(job.key).settings, batchSize, recognizer: config.recognizer,
           });
           if (result.key !== job.key) throw new Error('Preparation identity mismatch');
           await libraryOriginal(original, options);

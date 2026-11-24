@@ -806,10 +806,14 @@ document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !$('value-dialog').open && !$('debug-dialog')?.open && drawerQuery.matches && $('library-panel').dataset.open === 'true') { event.preventDefault(); setLibraryOpen(false); }
 });
 function buildLayout() { layout = nativeLayout(parseDocument(active.content), 0); }
+function preloadSpeech() {
+  askUI?.speech.schedulePreload(() => libraryReady && pdfPreparations.size === 0 && !openingLibrary);
+}
 async function trackPdfPreparation(work) {
   // Cancellation may overlap a new selection. Keep Ask blocked until every
   // outstanding preparation has settled and released its working memory.
   const preparation = {}; pdfPreparations.add(preparation);
+  askUI?.speech.cancelPreload();
   try {
     dirty = true; renderControls();
     return await work();
@@ -817,6 +821,7 @@ async function trackPdfPreparation(work) {
   finally {
     pdfPreparations.delete(preparation);
     dirty = true; renderControls();
+    preloadSpeech();
   }
 }
 
@@ -992,6 +997,7 @@ async function selectDocument(id, save = true) {
   lastPassage = -1; lastSentKey = '';
   renderLibrary(); renderOutline(); renderBookmarks(); renderControls();
   rememberPosition(); phonePreferences?.flush();
+  preloadSpeech();
 }
 function jumpHeading(heading) {
   diagnostics.log('heading-jump', { index: heading.index }); jump(heading.y ?? layout.blockY[heading.index]);
@@ -1816,7 +1822,8 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden && (WEB || !glasses.bridge)) { readingTracker.observe(null); askReadingTracker.observe(null); }
   if (document.hidden && (askUI?.phoneMic.capturing || askUI?.phoneMic.pending)) askUI.close();
   diagnostics.log('visibility', { state: document.visibilityState }); flushPosition();
-  if (!document.hidden) { pdfProgressRefresh?.(true); dirty = true; animate(performance.now(), true); }
+  if (!document.hidden) { pdfProgressRefresh?.(true); dirty = true; animate(performance.now(), true); preloadSpeech(); }
+  else askUI?.speech.cancelPreload();
 });
 window.addEventListener('pagehide', () => { readingTracker.leave(); askReadingTracker.leave(); void readingLog?.flush().catch(readingSaveError); askUI?.cancelPairing(); askUI?.close(); askUI?.speech.dispose(); flushPosition(); });
 window.addEventListener('pageshow', event => { if (event.persisted) voiceStartup = startVoiceSetup(); });
@@ -2081,7 +2088,7 @@ async function openLibrary() {
     await phonePreferences?.flush();
     if (WEB || store.onDemand && connectionMode(askUI.readConfig()) === 'terminal' && askUI.readConfig().endpoint) void startLibrarySync();
   })().catch(error => { diagnostics.error('library-open-error', error, { code: error.code, storage: error.storage }); notice(`Could not open the saved library: ${error.message}`, true); renderLibrary(); renderControls(); setLibraryOpen(true, false); })
-    .finally(() => { openingLibrary = null; });
+    .finally(() => { openingLibrary = null; preloadSpeech(); });
   return openingLibrary;
 }
 window.addEventListener('flutterInAppWebViewPlatformReady', () => openLibrary());

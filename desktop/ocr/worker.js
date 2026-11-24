@@ -6,16 +6,20 @@ import { base64ToBytes } from '../../src/binary.js';
 import { renderPdfPage } from '../../src/pdf-render.js';
 import { pdfColorProfile } from '../../src/pdf-colors.js';
 import { pdfAnalysisViewport, pdfSourceTransform } from '../../src/pdf-orientation.js';
+import { NanoOcr } from './nano-ocr.js';
+import { nanoDiagramGrid } from './nano-layout.js';
+import { PdfOcr } from '../../src/pdf-ocr.js';
 
 window.desktopPdfInfo = { version, preparationVersion: PDF_PREPARATION_VERSION };
-window.prepareDesktopPdf = async ({ content, settings, batchSize = 1, checkpointOnly = false }) => {
-  const reader = new PdfDocument();
+window.prepareDesktopPdf = async ({ content, settings, batchSize = 1, checkpointOnly = false, recognizer = 'tesseract-xiaomi' }) => {
+  const reader = new PdfDocument(!checkpointOnly && recognizer === 'ocria-nano' ? { createOcr: () => new NanoOcr(new PdfOcr(),
+    item => window.desktopNanoRecognize(item), message => reader.warnings.push(message)) } : {});
   const originalRead = reader.readPageText.bind(reader);
   const originalPrepare = reader.preparePageContents.bind(reader);
   const ready = new Map();
   const fallbacks = new Map();
   const remember = page => {
-    if (page.fallback?.code === 'ocr-output-limit') fallbacks.set(page.number, page.fallback);
+    if (['ocr-output-limit', 'ocr-diagram-grid'].includes(page.fallback?.code)) fallbacks.set(page.number, page.fallback);
     if (page.turn) reader.pageTurns.set(page.number, page.turn);
     ready.set(page.number, page.extracted);
   };
@@ -32,7 +36,7 @@ window.prepareDesktopPdf = async ({ content, settings, batchSize = 1, checkpoint
     if (turn) Object.assign(block, { turn, pageRotation: viewport.rotation,
       sourceTransform: pdfSourceTransform(pdfAnalysisViewport(page), viewport) });
     reader.marginMasks.set(number, []);
-    reader.warnings.push(`Page ${number}: OCR reached its output limit; the original page is shown as an image.`);
+    reader.warnings.push(`Page ${number}: ${fallbacks.get(number).code === 'ocr-diagram-grid' ? 'diagram layout preserved' : 'OCR reached its output limit'}; the original page is shown as an image.`);
     return { page: { number, width: canvas.width, height: canvas.height, bounds,
       blocks: [block], annotations: [], columns: false, marginMasks: [] }, endMatter: settings.endMatter };
   };
@@ -53,7 +57,7 @@ window.prepareDesktopPdf = async ({ content, settings, batchSize = 1, checkpoint
       if (reader.ocrFailed) throw new Error('Desktop geometry OCR failed; preparation will retry.');
       const turn = reader.pageTurns.get(n) || 0;
       let png = null;
-      if (reflow && extracted.needsOcr) {
+      if (reflow && extracted.needsOcr && recognizer !== 'ocria-nano') {
         const page = await reader.pdf.getPage(n);
         const base = page.getViewport({ scale: 1, rotation: (page.rotate + turn) % 360 });
         const viewport = page.getViewport({ scale: 2048 / Math.max(base.width, base.height), rotation: base.rotation });
@@ -63,7 +67,10 @@ window.prepareDesktopPdf = async ({ content, settings, batchSize = 1, checkpoint
           png = canvas.toDataURL('image/png').split(',')[1];
         } finally { canvas.width = canvas.height = 1; page.cleanup(); }
       }
-      pending.push({ number: n, extracted, turn, png });
+      const recognition = reader.ocr.results?.get(n);
+      const fallback = recognition?.model === 'OCRia-nano-1' && nanoDiagramGrid(extracted.text, extracted.width)
+        ? { code: 'ocr-diagram-grid', reason: 'short-label-grid' } : undefined;
+      pending.push({ number: n, extracted, turn, png, ...(recognition ? { recognition } : {}), ...(fallback ? { fallback } : {}) });
     }
     if (pending.length) for (const page of await window.desktopPageBatch(pending)) remember(page);
     const page = ready.get(number); ready.delete(number); return page;
