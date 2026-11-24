@@ -1,6 +1,7 @@
 import { AtomicPhoneValue, STORAGE_PREFIX, chunksOf, descriptor, readChunks, validateDescriptor } from './phone-storage.js';
 import { preparePdfNative } from './pdf-native.js';
-import { pdfPageTurn } from './pdf-layout.js';
+import { createPdfLayout, pdfPageTurn } from './pdf-layout.js';
+import { hasPdfInlineMath } from './pdf-inline-math.js';
 import { MAX_PDF_PAGES } from './pdf-limits.js';
 
 // Increment only when preparation geometry/recognition changes, not on every
@@ -51,7 +52,21 @@ export function validatePdfPreparation(saved) {
 }
 export function unpackPdfPreparation(saved) {
   validatePdfPreparation(saved);
-  const layout = saved.layout;
+  let layout = saved.layout;
+  const upgraded = layout.blocks.some(block => block.reflow && !block.contents && !block.annotationLabel && hasPdfInlineMath(block.reflow.text));
+  if (upgraded) {
+    // Source boxes survive in old caches. Upgrade only their presentation;
+    // never invalidate a book's OCR or re-render every source page on a phone.
+    const entries = layout.blocks.map(block => {
+      const crop = { ...block, y: block.sourceY };
+      if (block.reflow) crop.reflow = { ...block.reflow, rows: block.reflow.rows.map(row => ({ ...row,
+        items: block.lines.filter(line => line.displayY === row.y) })) };
+      return { page: block.page, block: crop };
+    });
+    const pages = layout.headings.map((_, index) => ({ number: index + 1, blocks: entries.filter(entry => entry.page === index + 1).map(entry => entry.block) }));
+    layout = { ...layout, ...createPdfLayout(pages, { textSize: layout.size, readingOrder: entries }),
+      annotations: layout.annotations || [] };
+  }
   layout.format = 'pdf'; layout.rows = [];
   layout.annotations ||= [];
   for (let y = 0; y < layout.height; y += 27) layout.rows.push({ y, height: 27 });
@@ -60,7 +75,7 @@ export function unpackPdfPreparation(saved) {
   // invalidating the prepared text, figures or OCR in the cache.
   layout.pages = [0];
   while (layout.pages.at(-1) < layout.maxY) layout.pages.push(pdfPageTurn(layout, layout.pages.at(-1), 1));
-  return { layout, marginMasks: new Map(saved.marginMasks), pageScales: new Map(saved.pageScales),
+  return { layout, upgraded, marginMasks: new Map(saved.marginMasks), pageScales: new Map(saved.pageScales),
     desktopEngine: saved.desktopEngine, desktopSha256: saved.desktopSha256 };
 }
 

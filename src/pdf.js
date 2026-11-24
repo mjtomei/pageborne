@@ -162,7 +162,7 @@ export class PdfDocument {
       this.marginMasks = restored.marginMasks; this.pageScales = restored.pageScales;
       this.pageTurns = new Map(this.layout.blocks.filter(block => block.turn).map(block => [block.page, block.turn]));
       this.raster = new PdfRaster(this.pdf, this.pageScales, normalizeColors, this.work);
-      if (!validPrior && cacheKey && !this.destroyed) {
+      if ((!validPrior || restored.upgraded) && cacheKey && !this.destroyed) {
         try {
           const saved = packPdfPreparation(this.layout, this.marginMasks, this.pageScales);
           if (restored.desktopEngine) saved.desktopEngine = restored.desktopEngine;

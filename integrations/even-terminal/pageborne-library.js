@@ -423,6 +423,9 @@ function countPreparedWords(layout) {
   if (!Array.isArray(layout?.blocks) || layout.preparation?.complete === false) return null;
   let words = 0;
   for (const block of layout.blocks) {
+    if (block.inlineMath && !block.annotation && !block.annotationLabel) {
+      words += (String(block.text || '').match(/\S*[\p{L}\p{N}]\S*/gu) || []).length; continue;
+    }
     if (!block.reflow || block.annotation || block.annotationLabel) continue;
     let text = '', previous;
     // Same source-word reconstruction as the reader, including words which

@@ -23,6 +23,7 @@ export function preparedReadingWords(layout) {
   if (!layout?.blocks || layout.preparation?.complete === false) return null;
   let words = 0;
   for (const block of layout.blocks) {
+    if (block.inlineMath && !block.annotation && !block.annotationLabel) { words += readingWords(block.text); continue; }
     if (!block.reflow || block.annotation || block.annotationLabel) continue;
     let text = '', previous;
     for (const row of block.reflow.rows) {

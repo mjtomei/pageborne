@@ -5,6 +5,7 @@ import { pdfFigures } from './pdf-figures.js';
 import { pdfColumnRegions } from './pdf-columns.js';
 import { pdfSourcePoint } from './pdf-orientation.js';
 import { preparePdfNative, pdfNativeWindow, pdfImageEnd } from './pdf-native.js';
+import { preservePdfInlineMath } from './pdf-inline-math.js';
 export const PDF_WIDTH = 576;
 export const PDF_SCREEN = 258;
 const median = values => values.sort((a, b) => a - b)[Math.floor(values.length / 2)] || 12;
@@ -340,7 +341,8 @@ export function createPdfLayout(pages, { textSize = 20, readingOrder = null } = 
     headings.push(heading);
   }
   const sourcePages = new Map(pages.map(page => [page.number, page]));
-  for (const { page: number, block: crop } of readingOrder || pages.flatMap(page => page.blocks.map(block => ({ page: page.number, block })))) {
+  const entries = readingOrder || pages.flatMap(page => page.blocks.map(block => ({ page: page.number, block })));
+  for (const { page: number, block: crop } of entries.flatMap(entry => preservePdfInlineMath(entry.block).map(block => ({ ...entry, block })))) {
     const page = sourcePages.get(number);
     // A standalone scan of a thin divider must not become an image-only
     // page between native paragraphs. Keep actual figures and text/equations,

@@ -1,10 +1,20 @@
 import { textWindow } from './native-text.js';
 import { speedEntries } from './speed-reading.js';
+import { readingWords, readingUnitKey } from './reading-activity.js';
 
 const cache = new WeakMap();
 export function glassesReadingUnits(frame, preparedEntries) {
   const { layout, y, mode, wordFrame, nativePdf } = frame || {};
   if (!layout || frame.message || frame.dialog || frame.picker || frame.positionPicker || frame.modePicker || frame.footnotes) return [];
+  if (layout.format === 'pdf' && !nativePdf) {
+    const block = layout.blocks.findLast(block => block.y <= y + .5);
+    if (block?.inlineMath && !block.annotation && !block.annotationLabel) {
+      const prefix = `math:${block.page}:${block.x}:${block.sourceY}`;
+      return [...block.text.matchAll(/\S+/gu)].filter(match => readingWords(match[0])).map(match => ({
+        key: readingUnitKey(prefix, match.index, match[0]), words: 1, text: match[0], page: block.page,
+      }));
+    }
+  }
   if (!cache.has(layout) || preparedEntries && cache.get(layout).entries !== preparedEntries) {
     const entries = preparedEntries || speedEntries(layout); let block = 0;
     if (layout.format === 'pdf') for (const e of entries) {

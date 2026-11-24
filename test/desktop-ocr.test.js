@@ -69,6 +69,10 @@ test('library word counts are opt-in, follow current PDF bytes, refresh after re
   assert.equal((await libraryManifest({ reading: true }, f.options)).files[0].readingWords, words);
   f.saved.layout.blocks[0].reflow.rows[0].text += ' More words.'; await f.publish();
   assert.equal((await libraryManifest({ reading: true }, f.options)).files[0].readingWords, 8);
+  f.saved.layout.blocks[1].inlineMath = true;
+  f.saved.layout.blocks[1].text = 'The solution 𝑥 is wrong.'; await f.publish();
+  assert.equal((await libraryManifest({ reading: true }, f.options)).files[0].readingWords, 13);
+  assert.equal(preparedReadingWords(f.saved.layout), 13, 'phone and desktop include visible math-bearing prose');
   f.saved.layout.preparation = { complete: false }; await f.publish();
   assert.equal((await libraryManifest({ reading: true }, f.options)).files[0].readingWords, undefined);
   await writeFile(path.join(f.options.libraryDir, f.name), '%PDF-replaced');
